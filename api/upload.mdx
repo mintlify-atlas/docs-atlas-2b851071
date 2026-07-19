@@ -1,5 +1,5 @@
 ---
-title: "Single File Upload API"
+title: "Single File Upload: Presigned PUT Flow — Vaulx API"
 sidebarTitle: "Upload"
 description: "Two-step presigned PUT upload flow: request a presigned S3 URL from the server, PUT file bytes directly to S3, then confirm to mark the file active."
 ---
@@ -108,7 +108,7 @@ Vaulx uses a two-step upload flow that keeps file bytes off the application serv
 
     The response also includes the `HX-Trigger` header carrying a `showToast` event so that HTMX-driven UIs can display a success notification without extra JavaScript:
 
-    ```
+    ```http
     HX-Trigger: {"showToast":{"message":"File uploaded","type":"success"}}
     ```
 
@@ -133,7 +133,7 @@ Before the S3 key is constructed, the filename is passed through a sanitization 
 | Original name          | Sanitized S3 segment     |
 |------------------------|--------------------------|
 | `my photo.jpg`         | `my_photo.jpg`           |
-| `résumé (final).pdf`   | `r_sum__ _final_.pdf`    |
+| `résumé (final).pdf`   | `résumé__final_.pdf`     |
 | `../../../etc/passwd`  | `______etc_passwd`       |
 | `report_2024-01.xlsx`  | `report_2024-01.xlsx`    |
 

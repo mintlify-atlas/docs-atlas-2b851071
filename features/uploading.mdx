@@ -1,7 +1,7 @@
 ---
-title: "Uploading Files to Vaulx"
+title: "How to Upload Files to Vaulx Using Presigned S3 URLs"
 sidebarTitle: "Uploading"
-description: "Upload files to Vaulx using presigned S3 URLs — no file data passes through the server. Supports single-step small uploads and resumable multipart uploads for large files."
+description: "Upload files to Vaulx via presigned S3 PUT URLs — bytes go straight to storage. Supports single-step and resumable multipart uploads for large files."
 ---
 
 Vaulx uses a presigned-URL upload strategy: the server never touches your file bytes. Instead it issues a time-limited, pre-authorised URL pointing directly at the S3-compatible bucket. Your browser (or API client) then PUTs the data straight to storage. This keeps the Vaulx server lightweight and allows uploads to scale without any changes to the application layer.
@@ -61,7 +61,7 @@ For files of any size where you want a single-step flow, use the presigned PUT p
   </Step>
 
   <Step title="Confirm the upload">
-    `POST /api/upload/confirm/{file_id}` — marks the file as `active` and makes it visible in the browser.
+    `POST /api/upload/confirm/{fileID}` — marks the file as `active` and makes it visible in the browser.
 
     Only the user who initiated the upload (or an admin) can call this endpoint. Confirming a file that is already `active` returns `404`.
 

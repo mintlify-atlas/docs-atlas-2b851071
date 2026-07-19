@@ -1,12 +1,10 @@
 ---
-title: "Multipart Upload API for Large Files"
+title: "S3 Multipart Upload API for Large Files — Vaulx Docs"
 sidebarTitle: "Multipart Upload"
 description: "S3 multipart upload API for large files: create an upload session, presign individual parts, upload parts directly to S3, then complete or abort."
 ---
 
 For large files, Vaulx exposes an S3 multipart upload API that lets the client break a file into parts and upload each one directly to S3 using a per-part presigned URL. The client creates an upload session, fetches a presigned URL for each part, PUTs the raw bytes for that part directly to S3, collects the `ETag` returned by each PUT, then calls the complete endpoint. The Vaulx server is never in the data path — only the signaling endpoints (create, presign, complete, abort) pass through it.
-
-The Uppy-based file browser UI uses this API internally via the `AwsS3` plugin, with a chunk size tuned between 10 MB and 100 MB per part and up to 6 parallel uploads.
 
 <Note>
   The **create**, **abort**, and **complete** endpoints require an authenticated session with the **editor** or **admin** role. The **list parts** and **presign part** endpoints require only a valid authenticated session.
@@ -18,7 +16,7 @@ The Uppy-based file browser UI uses this API internally via the `AwsS3` plugin, 
 
 Multipart upload keys are namespaced under `uploads/` and partitioned by year and month:
 
-```
+```text
 uploads/<year>/<month>/<16-hex-bytes>/<sanitized-name>
 ```
 
@@ -278,7 +276,7 @@ curl -s -X POST "https://vaulx.example.com/api/s3/multipart/${UPLOAD_ID}/complet
 </Tip>
 
 <Note>
-  Each part — except the very last one — must be **at least 5 MB** (5,242,880 bytes). This is an S3 protocol requirement: S3 will reject a complete request if any non-final part is smaller than 5 MB. The Vaulx Uppy integration enforces a minimum chunk size of 10 MB to stay safely above this limit.
+  Each part — except the very last one — must be **at least 5 MB** (5,242,880 bytes). This is an S3 protocol requirement: S3 will reject a complete request if any non-final part is smaller than 5 MB. A minimum chunk size of 10 MB is recommended to stay safely above this limit.
 </Note>
 
 <Warning>

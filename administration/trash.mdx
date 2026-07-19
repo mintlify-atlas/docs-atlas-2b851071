@@ -1,7 +1,7 @@
 ---
-title: "Trash and File Restoration in Vaulx"
+title: "Vaulx Trash Panel: Soft Delete and File Restoration"
 sidebarTitle: "Trash"
-description: "Understand how soft-deleted files are stored, browse the admin trash panel, and restore or permanently remove files."
+description: "Browse soft-deleted files in the Vaulx admin trash panel, restore files to active status, or permanently delete them from S3 and the database."
 ---
 
 Vaulx uses a two-stage deletion model to protect against accidental data loss. When a file is deleted through the normal UI, it is soft-deleted — its `status` column is set to `'deleted'` and it becomes invisible in the file browser, but the underlying record in PostgreSQL and the object in S3 remain intact. Admins can review all soft-deleted files in the `/admin/trash` panel and either restore them with a single click or permanently remove them when the data is no longer needed.
@@ -61,7 +61,7 @@ status TEXT NOT NULL DEFAULT 'pending'
     CHECK (status IN ('pending', 'active', 'deleted'))
 ```
 
-```
+```text
 pending  →  active  →  deleted
                             ↓
                        (hard delete removes the row entirely)

@@ -1,7 +1,7 @@
 ---
 title: "REST API Endpoints for Folders"
 sidebarTitle: "Folders"
-description: "Complete reference for folder endpoints in Vaulx: create, rename, delete folders, and generate shareable public links with role-based access."
+description: "Complete reference for folder endpoints in Vaulx: create, rename, and delete folders with owner and admin role-based access controls."
 ---
 
 Folders in Vaulx are hierarchical containers that map directly to logical groupings in the file browser. Every folder tracks its owner and, optionally, a parent folder — enabling arbitrarily deep nesting. Deletions cascade automatically through child folders and their files at the database level. All folder endpoints require an active session cookie.
@@ -167,47 +167,3 @@ curl -b cookies.txt -X PATCH \
 | `403 Forbidden` | User is neither the folder owner nor an admin. |
 | `404 Not Found` | No folder with that ID exists. |
 | `500 Internal Server Error` | Database update failed. |
-
----
-
-## Create a folder share link
-
-```http
-POST /files/folders/{folderID}/share
-```
-
-Generates a public, time-limited share link for a folder. The share is valid for **7 days** from creation. If an active share already exists for this folder, its existing slug is returned — no duplicate share records are created.
-
-**Authentication:** Required (editor+)
-
-<ParamField path="folderID" type="string" required>
-  UUID of the folder to share.
-</ParamField>
-
-```bash
-curl -b cookies.txt -X POST \
-  http://localhost:8080/files/folders/018e2c1a-dead-beef-a0b0-000000000001/share
-```
-
-**Success response:** `200 OK` — `application/json`
-
-<ResponseField name="url" type="string">
-  Relative path to the public share page. Prepend your Vaulx base URL to build a shareable link.
-</ResponseField>
-
-```json
-{"url": "/s/a3f9b2c1d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1"}
-```
-
-**Error responses:**
-
-| Status | Condition |
-|--------|-----------|
-| `400 Bad Request` | `folderID` is not a valid UUID. |
-| `403 Forbidden` | No active session or user is not at least an editor. |
-| `404 Not Found` | No folder with that ID exists. |
-| `500 Internal Server Error` | Failed to generate share slug or database insert failed. |
-
-<Note>
-  The share slug is a cryptographically random 32-byte value encoded as a 64-character hex string. Public access to `/s/{slug}` does not require authentication — share links carefully with external recipients.
-</Note>

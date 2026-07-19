@@ -1,5 +1,5 @@
 ---
-title: "Audit Log: Tracking All Actions in Vaulx"
+title: "Vaulx Audit Log: Viewing and Filtering Action History"
 sidebarTitle: "Audit Log"
 description: "Every meaningful action in Vaulx is appended to the audit_log table. Admins can view, paginate, and filter entries by action type from the admin panel."
 ---
@@ -57,7 +57,7 @@ The audit log viewer is available exclusively to admins at `GET /admin/audit`.
 
 By default, the page displays 50 entries per page, sorted newest-first. Use the `?page=` query parameter to navigate:
 
-```
+```text
 GET /admin/audit          # page 1 (entries 1–50)
 GET /admin/audit?page=2   # page 2 (entries 51–100)
 GET /admin/audit?page=3   # page 3 (entries 101–150)
@@ -86,7 +86,7 @@ LIMIT $1 OFFSET $2;
 
 Append `?action=<action>` to narrow results to a single action type. When an action filter is present, pagination is disabled and up to **100 entries** are returned:
 
-```
+```text
 GET /admin/audit?action=file.hard_delete
 GET /admin/audit?action=auth.login
 GET /admin/audit?action=file.restore

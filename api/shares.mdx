@@ -1,5 +1,5 @@
 ---
-title: "Share Link API Endpoints"
+title: "Public Share Links API for Files and Folders — Vaulx"
 sidebarTitle: "Shares"
 description: "Create, list, resolve, and revoke public share links for individual files and entire folder trees with optional expiry and view limits."
 ---
@@ -125,7 +125,7 @@ Downloads a specific file that lives inside a publicly shared folder tree. The `
 
 Renders an HTML page listing share links with their details.
 
-**Authentication:** editor role or higher required.
+**Authentication:** editor role or higher required. Viewer-role users are silently redirected to `/files`.
 
 - **Admins** see all shares across every user.
 - **Editors** see only shares they created.

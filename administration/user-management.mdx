@@ -1,7 +1,7 @@
 ---
-title: "Managing Users in Vaulx"
+title: "Vaulx User Management: Roles, Accounts, and Profiles"
 sidebarTitle: "User Management"
-description: "Create, update, and deactivate user accounts and manage roles from the admin-only user panel in Vaulx."
+description: "Create and manage user accounts, assign roles, deactivate accounts, and update profiles from the Vaulx admin panel and profile page."
 ---
 
 Vaulx uses a built-in user system backed by PostgreSQL. Admins can create and manage accounts directly from the `/admin/users` panel, assigning one of three roles to each user. On first boot, the server automatically seeds a single admin account from environment variables so there is always a way in. Every user action that modifies an account — including role changes, deactivations, and password updates — is recorded in the audit log.
@@ -42,7 +42,7 @@ SEED_ADMIN_PASSWORD=Ch4ngeMe99
 ```
 
 <Note>
-  `SEED_ADMIN_PASSWORD` must be at least 8 characters and contain at least one digit. Change this value before exposing Vaulx publicly.
+  Change `SEED_ADMIN_PASSWORD` to a strong, unique value before exposing Vaulx publicly. The seed step passes the password directly to bcrypt — no minimum-length check is enforced at seed time.
 </Note>
 
 ## Creating a user (admin only)
@@ -77,7 +77,7 @@ SEED_ADMIN_PASSWORD=Ch4ngeMe99
 </ParamField>
 
 <ParamField body="password" type="string" required>
-  Plain-text password hashed with bcrypt `DefaultCost` before storage. Minimum 8 characters recommended.
+  Plain-text password hashed with bcrypt `DefaultCost` before storage. The server does not enforce a minimum length at this endpoint — use a strong password as a matter of practice.
 </ParamField>
 
 ## Listing users

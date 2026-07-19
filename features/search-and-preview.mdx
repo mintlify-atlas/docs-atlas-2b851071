@@ -1,7 +1,7 @@
 ---
-title: "Search Files and Preview Assets in Vaulx"
+title: "Searching Files and Previewing Assets Inline in Vaulx"
 sidebarTitle: "Search & Preview"
-description: "Search across all active files and folders by name, and preview images and other assets inline in the file browser sidebar using short-lived presigned S3 URLs."
+description: "Search active files and folders by name in Vaulx, and preview images inline using 5-minute presigned S3 URLs — no full page reload required."
 ---
 
 Vaulx provides a name-based search that spans all active files and folders in a single request, and an inline preview panel that generates a 5-minute presigned S3 URL to display any asset without triggering a full download. Both features are deeply integrated with the HTMX-driven file browser — search results and previews swap into the existing page without a full reload.
@@ -20,10 +20,7 @@ The search endpoint performs a case-insensitive `ILIKE` match against file and f
 
 ### Access Control
 
-| Role | Visible results |
-|------|----------------|
-| Admin | All active files and all folders across all users |
-| Editor / other authenticated user | Only files they uploaded or have explicit permissions for, and folders they own or have been granted access to |
+Search requires an authenticated session. Any authenticated user — regardless of role — can search and will see all active files and folders returned by the query. There is no per-user result filtering applied at the search layer.
 
 ### HTMX Partial vs Full Page
 
@@ -107,7 +104,7 @@ The array is alphabetically sorted by folder name. Passing the chosen `id` as `f
   <Card title="Sharing" icon="share-nodes" href="/features/sharing">
     Create public share links for files and folders with expiry and view-count tracking.
   </Card>
-  <Card title="Files & Folders" icon="magnifying-glass" href="/features/files-and-folders">
-    Learn how soft-delete and the trash panel interact with search results.
+  <Card title="Soft Delete & Trash" icon="trash" href="/features/files-and-folders">
+    Learn how soft-delete and the admin trash panel interact with search results.
   </Card>
 </CardGroup>

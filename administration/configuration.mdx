@@ -1,7 +1,7 @@
 ---
-title: "Vaulx Configuration Reference"
+title: "Vaulx Configuration: Environment Variables and Settings"
 sidebarTitle: "Configuration"
-description: "Complete reference for all environment variables, session settings, storage configuration, and rate limits used by Vaulx."
+description: "Complete reference for all Vaulx environment variables, session cookie settings, S3 storage configuration, and per-IP rate-limiting rules."
 ---
 
 Vaulx is configured entirely through environment variables — there is no YAML or TOML config file. On startup the server loads variables from a `.env` file in the working directory if one is present (via `godotenv`), and then falls back to the process environment. This means the same binary works identically in local development, Docker Compose, and production PaaS deployments like Dokploy without any code changes.
@@ -13,8 +13,8 @@ Vaulx is configured entirely through environment variables — there is no YAML 
 | `DATABASE_URL` | Yes | — | Postgres connection string, e.g. `postgres://user:pass@host:5432/db?sslmode=disable` |
 | `SESSION_SECRET` | Yes | — | Random string ≥ 32 chars used to sign and verify session cookies |
 | `PORT` | No | `8080` | HTTP listen port |
-| `SEED_ADMIN_EMAIL` | Yes | — | Email for the admin account seeded on first boot |
-| `SEED_ADMIN_PASSWORD` | Yes | — | Password for the seeded admin (min 8 chars, at least one digit) |
+| `SEED_ADMIN_EMAIL` | No | — | Email for the admin account seeded on first boot. If unset, seeding is skipped. |
+| `SEED_ADMIN_PASSWORD` | No | — | Password for the seeded admin. If unset, seeding is skipped. No length or complexity check is enforced at seed time. |
 | `HETZNER_ACCESS_KEY` | Yes | — | Hetzner Object Storage access key |
 | `HETZNER_SECRET_KEY` | Yes | — | Hetzner Object Storage secret key |
 | `HETZNER_S3_ENDPOINT` | Yes | — | Storage endpoint URL, e.g. `https://fsn1.your-objectstorage.com` |

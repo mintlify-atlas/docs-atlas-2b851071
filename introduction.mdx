@@ -53,15 +53,16 @@ Every action — login, upload, rename, delete, folder operation, share creation
 Vaulx compiles to a **single stateless binary**. At startup it:
 
 1. Runs all pending SQL migrations (files are embedded in the binary via `embed.FS` — no external migration tool needed at runtime).
-2. Seeds the admin account from `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD` if it does not already exist.
-3. Opens a Postgres-backed session store and connects to the S3 bucket.
-4. Starts the HTTP server.
+2. Connects to the PostgreSQL database and the S3-compatible storage bucket.
+3. Sets the CORS policy on the S3 bucket to allow browser-initiated presigned uploads.
+4. Seeds the admin account from `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD` if it does not already exist.
+5. Starts the HTTP server.
 
 **Presigned uploads** mean file bytes never transit the Vaulx process. When a user initiates an upload, the server returns a presigned S3 URL; the browser puts the file directly to object storage, then calls back to confirm the upload. This keeps the server lightweight and avoids buffering large files in memory.
 
 ## Project Structure
 
-```
+```text
 .
 ├── cmd/server/          # main.go — router setup, handler wiring, migration runner
 ├── internal/

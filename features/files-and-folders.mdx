@@ -1,7 +1,7 @@
 ---
-title: "Managing Files and Folders in Vaulx"
+title: "Organise, Browse, and Manage Files and Folders in Vaulx"
 sidebarTitle: "Files & Folders"
-description: "Browse, create, rename, move, and delete files and folders in Vaulx — with role-based access control, breadcrumb navigation, and soft-delete trash recovery."
+description: "Create folders, rename and move files, download assets, and recover soft-deleted items in Vaulx — with breadcrumb navigation and role-based access."
 ---
 
 Vaulx organises all assets inside a hierarchical folder tree. Every authenticated user can navigate the browser, but only **editor** and **admin** roles may create folders and upload files. Admins have full read/write access to every resource; editors operate on the files and folders they own.
@@ -87,7 +87,7 @@ Admin users see paginated results in the file browser. Use the `page` and `limit
 | `page` | `1` | — | Page number (1-indexed) |
 | `limit` | `48` | `100` | Files per page |
 
-```
+```http
 GET /files?page=2&limit=48
 GET /files/{folderID}?page=3&limit=100
 ```

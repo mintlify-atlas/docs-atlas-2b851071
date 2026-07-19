@@ -1,7 +1,7 @@
 ---
-title: "ZIP Download API Endpoints"
+title: "ZIP Archive Download API — Streaming and Async Jobs"
 sidebarTitle: "ZIP"
-description: "Streaming and async background ZIP download for authenticated folder trees and public folder shares, with smart job reuse when folder contents haven't changed."
+description: "Streaming and async ZIP download for folder trees and public shares, with intelligent job reuse when folder contents have not changed."
 ---
 
 Vaulx supports downloading an entire folder tree as a ZIP archive. Two modes are available: **streaming** (immediate, synchronous — the archive is assembled on the fly and piped directly to the browser) and **background job** (async, for large trees — a worker assembles the ZIP into S3 and returns a 24-hour presigned download link). Both modes work for authenticated users browsing their own folders and for visitors accessing a public folder share. The background mode deduplicates work intelligently: if an existing job's snapshot matches the current folder state (same file count, total bytes, and newest file timestamp), the existing job is returned instead of creating a new one.
@@ -27,7 +27,7 @@ Streams the folder tree as a ZIP archive directly to the client. The response be
 
 **Response headers**
 
-```
+```http
 Content-Type: application/zip
 Content-Disposition: attachment; filename="<folderName>.zip"
 ```

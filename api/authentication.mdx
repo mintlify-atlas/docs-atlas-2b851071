@@ -1,5 +1,5 @@
 ---
-title: "Authenticating with the Vaulx API"
+title: "Vaulx API Authentication: Session Cookies and Login"
 sidebarTitle: "Authentication"
 description: "How to authenticate with the Vaulx API using session cookies: login via POST /auth/login, cookie attributes, curl usage, and error handling."
 ---
@@ -100,7 +100,7 @@ Two helper functions in `internal/auth/acl.go` govern what an authenticated user
 
 ```go
 // CanAccess reports whether user may access a resource owned by ownerID.
-// admin bypasses all checks; others require ownership.
+// Phase 1 stub: admin bypasses all checks; others require ownership.
 func CanAccess(user UserContext, ownerID string) bool {
     if user.Role == "admin" {
         return true

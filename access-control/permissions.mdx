@@ -1,5 +1,5 @@
 ---
-title: "Granting Per-Resource Permissions in Vaulx"
+title: "Per-Resource Permissions: Grant and Revoke Access in Vaulx"
 sidebarTitle: "Permissions"
 description: "Grant and revoke view, edit, or manage access to specific files or folders for any user, without changing their global role across the instance."
 ---
@@ -35,7 +35,7 @@ curl -X POST https://your-vaulx-instance/admin/permissions \
 
 On success, the handler sets an `HX-Trigger` header with a `showToast` event and redirects to:
 
-```
+```text
 GET /admin/permissions?type=<resource_type>&id=<resource_id>
 ```
 
@@ -61,7 +61,7 @@ GET /admin/permissions?type=<resource_type>&id=<resource_id>
 
 Admins can inspect which users have been granted access to any file or folder:
 
-```
+```text
 GET /admin/permissions?type=file&id={uuid}
 GET /admin/permissions?type=folder&id={uuid}
 ```
@@ -77,7 +77,7 @@ It also renders the grant form pre-filled with the resource type and ID so addit
 
 To remove a permission, send a `DELETE` request to the permission's ID:
 
-```
+```text
 DELETE /admin/permissions/{permID}
 ```
 

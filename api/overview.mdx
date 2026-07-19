@@ -1,5 +1,5 @@
 ---
-title: "Vaulx HTTP API Overview"
+title: "Vaulx API Reference: Routes, Auth, and Rate Limits"
 sidebarTitle: "Overview"
 description: "Vaulx HTTP API reference: server-rendered HTML and JSON endpoints, base URL, session-cookie auth, rate limits, and the full route table."
 ---
@@ -70,6 +70,12 @@ The following share routes are accessible without authentication:
 
 All other routes require a valid `vaulx-session` cookie (marked **Auth required**).
 
+### Root
+
+| Method | Path | Auth required | Description |
+|---|---|---|---|
+| `GET` | `/` | No | Redirects to `/files` |
+
 ### Auth
 
 | Method | Path | Auth required | Description |
@@ -130,7 +136,7 @@ These endpoints proxy the S3 multipart upload lifecycle and are consumed by the 
 
 | Method | Path | Auth required | Description |
 |---|---|---|---|
-| `POST` | `/api/s3/multipart/` | Yes | Initiate a new S3 multipart upload |
+| `POST` | `/api/s3/multipart` | Yes | Initiate a new S3 multipart upload |
 | `GET` | `/api/s3/multipart/{uploadId}` | Yes | List parts already uploaded for an in-progress multipart upload |
 | `GET` | `/api/s3/multipart/{uploadId}/{partNumber}` | Yes | Get a presigned URL for uploading a specific part |
 | `DELETE` | `/api/s3/multipart/{uploadId}` | Yes | Abort a multipart upload and discard uploaded parts |

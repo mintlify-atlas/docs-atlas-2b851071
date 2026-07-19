@@ -4,7 +4,7 @@ sidebarTitle: "Deployment"
 description: "Deploy Vaulx to production using Docker Compose on any Linux host, or use Dokploy for a managed deploy pipeline with built-in TLS and domain routing."
 ---
 
-Vaulx ships as a single Alpine-based Docker image with all SQL migrations embedded at build time. There is no migration tool to run separately — on every startup the server applies any pending migrations, seeds the admin account if it does not yet exist, and starts serving traffic. This makes production deployments straightforward: build the image, supply environment variables, and expose port `8080` behind a TLS-terminating reverse proxy.
+Vaulx ships as a single Alpine-based Docker image with all SQL migrations embedded at build time. There is no migration tool to run separately — on every startup the server applies any pending migrations, configures S3 bucket CORS, seeds the admin account if it does not yet exist, and starts serving traffic. This makes production deployments straightforward: build the image, supply environment variables, and expose port `8080` behind a TLS-terminating reverse proxy.
 
 ## Docker Compose Deployment
 
@@ -50,7 +50,7 @@ This approach works on any Linux host (VPS, dedicated server, etc.) where Docker
 
     Example Caddyfile snippet:
 
-    ```
+    ```text
     yourdomain.com {
         reverse_proxy localhost:8080
     }
@@ -89,7 +89,7 @@ This approach works on any Linux host (VPS, dedicated server, etc.) where Docker
   <Step title="Set all environment variables">
     In the **Environment** tab of your application, add the following variables:
 
-    ```
+    ```bash
     DATABASE_URL=postgres://user:pass@your-pg-host:5432/vaulx?sslmode=disable
     SESSION_SECRET=<random 32+ char string>
     PORT=8080
@@ -105,8 +105,9 @@ This approach works on any Linux host (VPS, dedicated server, etc.) where Docker
     Trigger a deploy from the Dokploy dashboard (or push to your linked branch). Dokploy builds the image and starts the container. On first start the app will:
 
     1. Run all pending database migrations automatically
-    2. Seed the admin account using `SEED_ADMIN_EMAIL` and `SEED_ADMIN_PASSWORD` if the account does not yet exist
-    3. Start serving HTTP on `$PORT`
+    2. Connect to the database and S3 bucket, then apply the bucket CORS policy
+    3. Seed the admin account using `SEED_ADMIN_EMAIL` and `SEED_ADMIN_PASSWORD` if the account does not yet exist
+    4. Start serving HTTP on `$PORT`
 
     Check the **Logs** tab to confirm migrations completed and the server is listening.
   </Step>
@@ -148,9 +149,10 @@ This approach works on any Linux host (VPS, dedicated server, etc.) where Docker
 Every time the Vaulx container starts it runs the following sequence before accepting HTTP traffic:
 
 1. **Migrations** — `golang-migrate` applies any pending `.sql` files from the `migrations/` directory, which is embedded directly into the binary at build time via `embed.FS`. No external migration tooling is needed on the host.
-2. **Admin seed** — If no user with `SEED_ADMIN_EMAIL` exists in the database, the server creates an `admin`-role account with the provided email and password. Subsequent restarts skip this step if the account already exists.
+2. **Database &amp; storage connect** — The server opens the PostgreSQL connection pool and connects to the configured S3-compatible storage bucket.
 3. **Storage CORS** — The server sets the CORS policy on the configured S3 bucket to allow browser-initiated presigned uploads from your domain.
-4. **HTTP listener** — The server starts accepting requests on `$PORT`.
+4. **Admin seed** — If no user with `SEED_ADMIN_EMAIL` exists in the database, the server creates an `admin`-role account with the provided email and password. Subsequent restarts skip this step if the account already exists.
+5. **HTTP listener** — The server starts accepting requests on `$PORT`.
 
 ---
 

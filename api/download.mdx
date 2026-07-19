@@ -16,7 +16,7 @@ GET /files/{fileID}/download
 
 Validates the caller's session and access rights, generates a 15-minute presigned S3 GET URL for the file, and returns a `302 Found` redirect to that URL. The browser follows the redirect and downloads the file directly from S3.
 
-**Authentication:** Required (file uploader, admin, or any user with an explicit permission grant on this file)
+**Authentication:** Required (file uploader or admin only)
 
 <ParamField path="fileID" type="string" required>
   UUID of the file to download. The file must exist and have `status = 'active'`.
@@ -30,7 +30,7 @@ Validates the caller's session and access rights, generates a 15-minute presigne
 |--------|-----------|
 | `400 Bad Request` | `fileID` is not a valid UUID. |
 | `401 Unauthorized` | No active session cookie. |
-| `403 Forbidden` | Authenticated user is not the uploader, not an admin, and has no permission grant on this file. |
+| `403 Forbidden` | Authenticated user is not the uploader and is not an admin. |
 | `404 Not Found` | No file with that ID exists, or the file's `status` is not `active` (e.g., it is `pending` or `deleted`). |
 | `500 Internal Server Error` | Presigned URL generation failed (S3 client not initialised or AWS error). |
 
