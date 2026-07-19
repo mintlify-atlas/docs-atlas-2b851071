@@ -1,0 +1,146 @@
+---
+title: "Permission Grant API Endpoints"
+sidebarTitle: "Permissions"
+description: "Admin-only endpoints to grant, list, and revoke per-resource access permissions for individual files and folders across all users."
+---
+
+Permissions give specific users fine-grained access to a file or folder beyond what their global role allows. An admin can grant `view`, `edit`, or `manage` access to any user for any resource. Permissions are stored with a `UNIQUE (user_id, resource_type, resource_id)` constraint, so granting the same user access to the same resource a second time **upserts** the existing row with the new level rather than creating a duplicate.
+
+All three endpoints require the `admin` role. Non-admin requests receive a **403** HTML error page.
+
+---
+
+## List permissions for a resource
+
+**`GET /admin/permissions`**
+
+Renders an HTML admin page listing all permissions granted for a specific file or folder, along with a form to grant new access.
+
+**Authentication:** admin only.
+
+<ParamField query="type" type="string" required>
+  The resource type. Must be `file` or `folder`.
+</ParamField>
+
+<ParamField query="id" type="uuid" required>
+  The UUID of the resource to inspect.
+</ParamField>
+
+**Example request**
+
+```http
+GET /admin/permissions?type=file&id=550e8400-e29b-41d4-a716-446655440000
+```
+
+```http
+GET /admin/permissions?type=folder&id=6ba7b810-9dad-11d1-80b4-00c04fd430c8
+```
+
+**Response fields per permission row**
+
+<ResponseField name="id" type="uuid">
+  Unique permission identifier.
+</ResponseField>
+
+<ResponseField name="grantee_name" type="string">
+  Display name of the user who was granted access.
+</ResponseField>
+
+<ResponseField name="grantee_email" type="string">
+  Email address of the user who was granted access.
+</ResponseField>
+
+<ResponseField name="level" type="string">
+  The granted access level: `view`, `edit`, or `manage`.
+</ResponseField>
+
+<ResponseField name="created_at" type="string">
+  Human-readable date when the permission was granted (e.g. `Jan 2, 2006`).
+</ResponseField>
+
+<Note>
+  The page also renders a grant form pre-populated with all active users for easy selection. Only active users are listed in the dropdown.
+</Note>
+
+---
+
+## Grant permission
+
+**`POST /admin/permissions`**
+
+Grants a user access to a file or folder at the specified level. If the user already has a permission on this resource, the existing row is updated with the new level (upsert semantics enforced by `ON CONFLICT DO UPDATE`).
+
+**Authentication:** admin only.
+
+**Content-Type:** `application/x-www-form-urlencoded`
+
+<ParamField body="resource_type" type="string" required>
+  The type of resource to grant access to. Must be `file` or `folder`.
+</ParamField>
+
+<ParamField body="resource_id" type="uuid" required>
+  The UUID of the file or folder to grant access to.
+</ParamField>
+
+<ParamField body="user_id" type="uuid" required>
+  The UUID of the user to grant access to.
+</ParamField>
+
+<ParamField body="level" type="string" required>
+  The access level to grant. One of: `view`, `edit`, `manage`.
+</ParamField>
+
+**Example request body**
+
+```
+resource_type=file&resource_id=550e8400-e29b-41d4-a716-446655440000&user_id=9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d&level=edit
+```
+
+**Response**
+
+- **302 Redirect** to `GET /admin/permissions?type=<resource_type>&id=<resource_id>`.
+- `HX-Trigger` header fires a success toast: `{"showToast":{"message":"Access granted","type":"success"}}`.
+- Returns **400 Bad Request** if any required field is missing or if `level` is not one of the accepted values.
+- Returns **500 Internal Server Error** if the database operation fails.
+
+<Tip>
+  Because the SQL uses `ON CONFLICT DO UPDATE`, you can safely re-POST to change an existing permission level without first revoking it.
+</Tip>
+
+---
+
+## Revoke permission
+
+**`DELETE /admin/permissions/{permID}`**
+
+Permanently removes a permission grant. The affected user immediately loses the access level tied to this entry.
+
+**Authentication:** admin only.
+
+<ParamField path="permID" type="uuid" required>
+  The UUID of the permission record to delete.
+</ParamField>
+
+**Response**
+
+- **200 OK** with `HX-Trigger` header: `{"showToast":{"message":"Access revoked","type":"success"}}`.
+- Returns **400 Bad Request** if `permID` is not a valid UUID.
+- Returns **500 Internal Server Error** if the delete fails.
+
+---
+
+## Permission model
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | UUID | Primary key |
+| `user_id` | UUID | FK → users.id (ON DELETE CASCADE) |
+| `resource_type` | text | `file` or `folder` |
+| `resource_id` | UUID | References files.id or folders.id |
+| `level` | text | `view`, `edit`, or `manage` |
+| `granted_by` | UUID \| null | FK → users.id of the granting admin |
+| `created_at` | timestamptz | Row creation time |
+
+<Warning>
+  The `UNIQUE (user_id, resource_type, resource_id)` constraint means each user can only hold one permission level per resource at a time. Granting again overwrites the previous level silently.
+</Warning>

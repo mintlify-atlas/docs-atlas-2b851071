@@ -1,0 +1,127 @@
+---
+title: "Managing Files and Folders in Vaulx"
+sidebarTitle: "Files & Folders"
+description: "Browse, create, rename, move, and delete files and folders in Vaulx — with role-based access control, breadcrumb navigation, and soft-delete trash recovery."
+---
+
+Vaulx organises all assets inside a hierarchical folder tree. Every authenticated user can navigate the browser, but only **editor** and **admin** roles may create folders and upload files. Admins have full read/write access to every resource; editors operate on the files and folders they own.
+
+## File Browser
+
+The file browser is the central interface for navigating your assets. It renders a card grid of folders and files with a persistent breadcrumb trail so you always know where you are.
+
+| URL | Description |
+|-----|-------------|
+| `GET /files` | Root listing — all root-level folders and files |
+| `GET /files/{folderID}` | Folder contents — subfolders and files inside a specific folder |
+
+The breadcrumb begins with **My Files** (linking back to `/files`) and appends each ancestor folder in order. The server builds the full ancestor chain by walking the `parent_id` field upward through the `folders` table.
+
+Admins see **all** folders and files at every level. Non-admin editors see only the folders and files they own, plus any resources explicitly shared with them via the permissions table.
+
+## Folder Operations
+
+<Note>
+  All folder-mutating endpoints accept `application/x-www-form-urlencoded` form data, which is what the browser's HTMX-powered inline forms send automatically.
+</Note>
+
+| Operation | Method & Path | Required Role | Notes |
+|-----------|--------------|---------------|-------|
+| Create | `POST /files/folders` | Editor or Admin | `name` (required), `parent_id` (optional UUID). Omit `parent_id` to create at root. |
+| Rename | `PATCH /files/folders/{folderID}` | Owner or Admin | `name` (required). Returns the updated folder card partial. |
+| Delete | `DELETE /files/folders/{folderID}` | Owner or Admin | Cascades to all child folders and their files via database constraint. |
+
+### Create Folder
+
+```bash
+curl -X POST https://your-vaulx.example.com/files/folders \
+  -b "session=<token>" \
+  -d "name=Marketing Assets" \
+  -d "parent_id=018f2a3b-4c5d-7e8f-9a0b-1c2d3e4f5a6b"
+```
+
+On success, the server redirects to the parent folder (or `/files` if root). An HTMX `showToast` trigger fires a success notification.
+
+### Rename Folder
+
+```bash
+curl -X PATCH https://your-vaulx.example.com/files/folders/018f2a3b-4c5d-7e8f-9a0b-1c2d3e4f5a6b \
+  -b "session=<token>" \
+  -d "name=Brand Assets"
+```
+
+Returns the updated `FolderCard` HTML partial, which HTMX swaps in-place.
+
+## File Operations
+
+| Operation | Method & Path | Required Role | Notes |
+|-----------|--------------|---------------|-------|
+| Download | `GET /files/{fileID}/download` | Any authenticated user with access | Redirects (302) to a presigned S3 GET URL (15-minute TTL) |
+| Rename | `PATCH /files/{fileID}/name` | Editor who uploaded it, or Admin | Form field: `name`. Returns updated file card partial. |
+| Move | `PATCH /files/{fileID}/folder` | Editor or Admin | JSON body: `{"folderId": "<uuid>"}`. Pass an empty string to move to root. |
+| Delete (soft) | `DELETE /files/{fileID}` | Editor who uploaded it, or Admin | Sets `status = 'deleted'`. File is recoverable from the admin trash panel. |
+| Delete (hard) | `DELETE /files/{fileID}?permanent=true` | Admin only | Removes the S3 object **and** the database record permanently. |
+
+### Move a File
+
+```bash
+# Move to a folder
+curl -X PATCH https://your-vaulx.example.com/files/018abc.../folder \
+  -b "session=<token>" \
+  -H "Content-Type: application/json" \
+  -d '{"folderId": "018f2a3b-4c5d-7e8f-9a0b-1c2d3e4f5a6b"}'
+
+# Move back to root
+curl -X PATCH https://your-vaulx.example.com/files/018abc.../folder \
+  -b "session=<token>" \
+  -H "Content-Type: application/json" \
+  -d '{"folderId": ""}'
+```
+
+## Pagination
+
+Admin users see paginated results in the file browser. Use the `page` and `limit` query parameters to navigate:
+
+| Parameter | Default | Maximum | Description |
+|-----------|---------|---------|-------------|
+| `page` | `1` | — | Page number (1-indexed) |
+| `limit` | `48` | `100` | Files per page |
+
+```
+GET /files?page=2&limit=48
+GET /files/{folderID}?page=3&limit=100
+```
+
+Non-admin editors always receive their complete file list in a single response — pagination is not applied.
+
+## File Statuses
+
+Every file record carries a `status` field that controls its visibility:
+
+| Status | Meaning |
+|--------|---------|
+| `pending` | Upload has been initialised but not yet confirmed. The file is not visible in the browser. |
+| `active` | Upload is complete and the file is fully visible. |
+| `deleted` | File has been soft-deleted. Hidden from the browser but recoverable by an admin. |
+
+<Note>
+  Soft-deleting a file (the default `DELETE /files/{fileID}` without `?permanent=true`) sets its status to `deleted` and removes it from all listings. An admin can restore it from **Admin → Trash** at any time. Only `?permanent=true` is irreversible.
+</Note>
+
+## ZIP Downloads
+
+Vaulx can package an entire folder tree — including all subfolders — as a single ZIP archive.
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `GET /files/{folderID}/zip` | GET | Streams the ZIP directly. Best for small-to-medium trees. |
+| `POST /files/{folderID}/zip/prepare` | POST | Queues an async background job. Returns an HTMX status fragment that polls `GET /files/{folderID}/zip/status` every 3 seconds until the archive is ready. |
+| `GET /files/{folderID}/zip/status` | GET | Returns the current job status fragment (pending / ready / failed). |
+
+The streaming endpoint respects the same access rules as the file browser: admins get everything, editors get only their own uploads. The async prepare endpoint builds the full active tree regardless of uploader.
+
+```bash
+# Stream ZIP immediately
+curl -L -O -b "session=<token>" \
+  https://your-vaulx.example.com/files/018f2a3b-4c5d-7e8f-9a0b-1c2d3e4f5a6b/zip
+```

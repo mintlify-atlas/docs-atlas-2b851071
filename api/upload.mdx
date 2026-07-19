@@ -1,0 +1,142 @@
+---
+title: "Single File Upload API"
+sidebarTitle: "Upload"
+description: "Two-step presigned PUT upload flow: request a presigned S3 URL from the server, PUT file bytes directly to S3, then confirm to mark the file active."
+---
+
+Vaulx uses a two-step upload flow that keeps file bytes off the application server entirely. The client first asks the Vaulx API to create a pending file record and receive a short-lived presigned S3 PUT URL. The client then PUTs the raw file bytes straight to S3 using that URL. Finally, the client notifies the Vaulx server to mark the file active, which records the upload in the audit log and makes the file visible in the file browser.
+
+<Note>
+  Both endpoints require an authenticated session. The authenticated user must hold the **editor** or **admin** role. A viewer-only session will receive a `403 Forbidden` response.
+</Note>
+
+---
+
+## Full upload flow
+
+<Steps>
+
+  <Step title="POST /api/upload/init — Request a presigned URL">
+
+    Send a JSON body describing the file you want to upload. The server creates a file record with `status = 'pending'` and returns a presigned S3 PUT URL alongside the new file's UUID.
+
+    **Request body**
+
+    ```json
+    {
+      "name": "photo.jpg",
+      "size": 1234567,
+      "mime_type": "image/jpeg",
+      "folder_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+    }
+    ```
+
+    <ParamField body="name" type="string" required>
+      The original filename. Vaulx sanitizes this value before using it as the S3 object name: any character that is not a letter, digit, `.`, `-`, or `_` is replaced with `_`. The unsanitized name is stored in the database as the display name.
+    </ParamField>
+
+    <ParamField body="size" type="integer" required>
+      File size in bytes. This value is embedded in the presigned URL signature — the subsequent S3 PUT must send exactly this many bytes via `Content-Length`, or S3 will reject the request.
+    </ParamField>
+
+    <ParamField body="mime_type" type="string">
+      MIME type of the file (e.g. `image/jpeg`, `video/mp4`). Used as the S3 `Content-Type`. If omitted, the `Content-Type` header on the PUT request is left unconstrained by the signature.
+    </ParamField>
+
+    <ParamField body="folder_id" type="string">
+      UUID of the destination folder. Omit the field or pass an empty string to place the file at the root level.
+    </ParamField>
+
+    **Response**
+
+    ```json
+    {
+      "file_id": "3f7a1b2c-4d5e-6f7a-8b9c-0d1e2f3a4b5c",
+      "upload_url": "https://fsn1.your-objectstorage.com/vaulx/files/a1b2c3d4e5f6a1b2/photo.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=..."
+    }
+    ```
+
+    <ResponseField name="file_id" type="string">
+      UUID of the newly created file record. Save this — you will need it to call the confirm endpoint after the S3 PUT completes.
+    </ResponseField>
+
+    <ResponseField name="upload_url" type="string">
+      Presigned S3 PUT URL. The URL is valid for **15 minutes**. PUT the raw file bytes to this URL during that window. The URL encodes the `Content-Type` and `Content-Length` constraints derived from `mime_type` and `size`, so those headers must match exactly.
+    </ResponseField>
+
+    The S3 object key is generated as `files/<16-hex-bytes>/<sanitized-name>`. For example, a file named `my photo.jpg` stored in the bucket will have a key such as `files/a1b2c3d4e5f6a1b2/my_photo.jpg`.
+
+  </Step>
+
+  <Step title="PUT the file bytes directly to S3">
+
+    Issue an HTTP PUT directly from the browser or client to the `upload_url` returned in step 1. The Vaulx server is not involved in this transfer — the bytes go directly to S3.
+
+    You **must** include `Content-Type` and `Content-Length` headers whose values match the `mime_type` and `size` sent in step 1. S3 validates these against the presigned URL signature and will return a `403` if they differ.
+
+    **Example with curl**
+
+    ```bash
+    curl -X PUT "<upload_url>" \
+      -H "Content-Type: image/jpeg" \
+      -H "Content-Length: 1234567" \
+      --data-binary @photo.jpg
+    ```
+
+    A successful PUT returns HTTP `200` with an empty body. If S3 returns a non-2xx status, do not call the confirm endpoint — the file will remain in `status = 'pending'` and can be retried or cleaned up.
+
+  </Step>
+
+  <Step title="POST /api/upload/confirm/{fileID} — Confirm the upload">
+
+    Once the S3 PUT succeeds, notify the Vaulx server that the upload is complete. The server sets the file's status to `active` and writes a `file.upload` audit log entry.
+
+    **Path parameter**
+
+    | Parameter | Type   | Description                                          |
+    |-----------|--------|------------------------------------------------------|
+    | `fileID`  | string | The UUID returned as `file_id` from the init endpoint |
+
+    **Response**
+
+    ```json
+    {
+      "status": "ok",
+      "file_id": "3f7a1b2c-4d5e-6f7a-8b9c-0d1e2f3a4b5c"
+    }
+    ```
+
+    The response also includes the `HX-Trigger` header carrying a `showToast` event so that HTMX-driven UIs can display a success notification without extra JavaScript:
+
+    ```
+    HX-Trigger: {"showToast":{"message":"File uploaded","type":"success"}}
+    ```
+
+    **Error responses**
+
+    | Status | Condition                                              |
+    |--------|--------------------------------------------------------|
+    | `400`  | `fileID` path parameter is not a valid UUID            |
+    | `403`  | Authenticated user is not the uploader and is not admin |
+    | `404`  | File record not found, or file is already `active`     |
+
+  </Step>
+
+</Steps>
+
+---
+
+## Filename sanitization
+
+Before the S3 key is constructed, the filename is passed through a sanitization step. The path component is stripped (everything up to and including the last `/` or `\`), then every remaining character that is not a Unicode letter, Unicode digit, `.`, `-`, or `_` is replaced with `_`. If the result is an empty string, the name falls back to `file`.
+
+| Original name          | Sanitized S3 segment     |
+|------------------------|--------------------------|
+| `my photo.jpg`         | `my_photo.jpg`           |
+| `résumé (final).pdf`   | `r_sum__ _final_.pdf`    |
+| `../../../etc/passwd`  | `______etc_passwd`       |
+| `report_2024-01.xlsx`  | `report_2024-01.xlsx`    |
+
+<Note>
+  The presigned PUT URL expires **15 minutes** after it is issued. Call `POST /api/upload/confirm/{fileID}` promptly once the S3 PUT completes. If the URL expires before the PUT is attempted, discard the pending file record and restart the flow from the init endpoint.
+</Note>

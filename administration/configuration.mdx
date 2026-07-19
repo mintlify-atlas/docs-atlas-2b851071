@@ -1,0 +1,147 @@
+---
+title: "Vaulx Configuration Reference"
+sidebarTitle: "Configuration"
+description: "Complete reference for all environment variables, session settings, storage configuration, and rate limits used by Vaulx."
+---
+
+Vaulx is configured entirely through environment variables — there is no YAML or TOML config file. On startup the server loads variables from a `.env` file in the working directory if one is present (via `godotenv`), and then falls back to the process environment. This means the same binary works identically in local development, Docker Compose, and production PaaS deployments like Dokploy without any code changes.
+
+## Environment variables
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `DATABASE_URL` | Yes | — | Postgres connection string, e.g. `postgres://user:pass@host:5432/db?sslmode=disable` |
+| `SESSION_SECRET` | Yes | — | Random string ≥ 32 chars used to sign and verify session cookies |
+| `PORT` | No | `8080` | HTTP listen port |
+| `SEED_ADMIN_EMAIL` | Yes | — | Email for the admin account seeded on first boot |
+| `SEED_ADMIN_PASSWORD` | Yes | — | Password for the seeded admin (min 8 chars, at least one digit) |
+| `HETZNER_ACCESS_KEY` | Yes | — | Hetzner Object Storage access key |
+| `HETZNER_SECRET_KEY` | Yes | — | Hetzner Object Storage secret key |
+| `HETZNER_S3_ENDPOINT` | Yes | — | Storage endpoint URL, e.g. `https://fsn1.your-objectstorage.com` |
+| `HETZNER_BUCKET` | Yes | — | Bucket name |
+
+<Note>
+  A complete `.env` file for local development looks like this:
+
+  ```env
+  DATABASE_URL=postgres://user:pass@localhost:5432/vaulx?sslmode=disable
+  SESSION_SECRET=replace-with-32-plus-byte-random-string
+  PORT=8080
+  SEED_ADMIN_EMAIL=admin@yourdomain.com
+  SEED_ADMIN_PASSWORD=Ch4ngeMe99
+  HETZNER_ACCESS_KEY=your-access-key
+  HETZNER_SECRET_KEY=your-secret-key
+  HETZNER_S3_ENDPOINT=https://fsn1.your-objectstorage.com
+  HETZNER_BUCKET=vaulx
+  ```
+
+  Copy `.env.example` from the repository root and fill in your values before the first run.
+</Note>
+
+<Warning>
+  Never commit `SESSION_SECRET`, `HETZNER_ACCESS_KEY`, or `HETZNER_SECRET_KEY` to source control. Rotate `SESSION_SECRET` immediately if it is ever exposed — doing so invalidates all active sessions.
+</Warning>
+
+## Session configuration
+
+Sessions are backed by PostgreSQL using [`pgstore`](https://github.com/antonlindstrom/pgstore). The store is initialised in `main.go` with the following options:
+
+```go
+sessionStore.Options = &gorillasessions.Options{
+    Path:     "/",
+    MaxAge:   86400 * 7,
+    HttpOnly: true,
+    SameSite: http.SameSiteLaxMode,
+    Secure:   true,
+}
+```
+
+| Setting | Value | Notes |
+|---|---|---|
+| `MaxAge` | `86400 * 7` (7 days) | Sessions expire after one week |
+| `HttpOnly` | `true` | Cookie is not accessible via JavaScript |
+| `SameSite` | `Lax` | Protects against most CSRF vectors |
+| `Secure` | `true` | Cookie is only sent over HTTPS |
+| Cleanup interval | 5 minutes | Expired session rows are pruned automatically |
+
+The cleanup goroutine is started at server boot and shut down gracefully on exit:
+
+```go
+defer sessionStore.StopCleanup(sessionStore.Cleanup(5 * time.Minute))
+```
+
+<Warning>
+  `Secure: true` means the session cookie will only be transmitted over HTTPS. In production you **must** terminate TLS in front of Vaulx (e.g. via a reverse proxy or Dokploy's built-in domain/HTTPS feature). If you are testing locally over plain HTTP, log-in will appear to succeed but the session cookie will not be sent back by the browser on subsequent requests.
+</Warning>
+
+## Storage configuration
+
+Vaulx uses the AWS SDK for Go v2 (`aws-sdk-go-v2`) with a custom endpoint, which makes it compatible with any S3-compatible object store.
+
+<Tabs>
+  <Tab title="Supported backends">
+    | Backend | How to configure |
+    |---|---|
+    | **Hetzner Object Storage** | Set `HETZNER_S3_ENDPOINT` to your region endpoint, e.g. `https://fsn1.your-objectstorage.com` |
+    | **AWS S3** | Point `HETZNER_S3_ENDPOINT` to the standard AWS regional endpoint for your bucket |
+    | **MinIO** | Point `HETZNER_S3_ENDPOINT` to your MinIO server URL |
+  </Tab>
+  <Tab title="CORS">
+    On startup, `storage.EnsureCORS` is called automatically to apply a CORS policy to the bucket. This is required so that browsers can upload directly to presigned URLs from the Vaulx domain.
+
+    ```go
+    if err := storage.EnsureCORS(ctx); err != nil {
+        log.Printf("warning: could not set bucket CORS policy: %v", err)
+    } else {
+        log.Println("storage: CORS policy applied")
+    }
+    ```
+
+    A warning is logged if CORS cannot be applied (e.g. the credentials lack the required permission), but the server continues to start.
+  </Tab>
+  <Tab title="S3 key paths">
+    Vaulx uses two distinct key patterns depending on the upload method:
+
+    | Upload type | S3 key pattern | Example |
+    |---|---|---|
+    | Standard (presigned PUT) | `files/<16-hex-bytes>/<name>` | `files/a3f9c1e204b87d56/report.pdf` |
+    | Multipart | `uploads/<year>/<month>/<16-hex-bytes>/<name>` | `uploads/2025/06/d7e2b0f1a9c34812/video.mp4` |
+
+    The hex prefix ensures that objects are distributed across storage partitions and prevents name collisions between uploads of identically-named files.
+  </Tab>
+</Tabs>
+
+## Rate limiting
+
+Vaulx uses [`go-chi/httprate`](https://github.com/go-chi/httprate) to apply per-IP rate limits on endpoints that are either sensitive or computationally expensive. Limits are configured in `main.go`:
+
+| Route | Method | Limit |
+|---|---|---|
+| `/auth/login` | `POST` | 10 requests per IP per minute |
+| `/s/{slug}/zip/prepare` | `POST` | 5 requests per IP per minute |
+
+```go
+r.With(httprate.LimitByIP(10, 1*time.Minute)).Post("/auth/login", authHandler.LoginPage)
+r.With(httprate.LimitByIP(5, 1*time.Minute)).Post("/s/{slug}/zip/prepare", zipHandler.SharedPrepareZip)
+```
+
+Requests that exceed a limit receive `429 Too Many Requests`. No configuration is needed — the limits are fixed in the source.
+
+## Database
+
+Vaulx requires PostgreSQL 16. The connection is established via the `pgx/v5` driver using the `DATABASE_URL` environment variable.
+
+<CardGroup cols={2}>
+  <Card title="Automatic migrations" icon="database">
+    Migrations are embedded directly in the compiled binary using Go's `embed.FS` and executed automatically at startup via `golang-migrate`. There is no separate migration step or CLI command — the database is always up to date when the server starts.
+
+    ```go
+    src, err := iofs.New(migrations.FS, ".")
+    m, err := migrate.NewWithInstance("iofs", src, "postgres", driver)
+    m.Up() // no-op if already at latest version
+    ```
+  </Card>
+  <Card title="Session storage" icon="clock">
+    The `pgstore` session backend creates its own `http_sessions` table in the same database. No additional setup is required — the table is created by `pgstore` on first use. Sessions are cleaned up every 5 minutes by a background goroutine.
+  </Card>
+</CardGroup>

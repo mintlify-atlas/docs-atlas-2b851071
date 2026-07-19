@@ -1,0 +1,108 @@
+---
+title: "Audit Log: Tracking All Actions in Vaulx"
+sidebarTitle: "Audit Log"
+description: "Every meaningful action in Vaulx is appended to the audit_log table. Admins can view, paginate, and filter entries by action type from the admin panel."
+---
+
+Every meaningful action taken in a Vaulx instance — from user logins and file uploads to permanent deletions and password changes — is recorded as an immutable row in the `audit_log` table. The log is append-only and admin-only: no user can delete or alter entries, and no non-admin can view them. This gives operators a complete, tamper-resistant trail of everything that happened and who did it.
+
+## Recorded Actions
+
+Each audit entry carries an `action` string that identifies the operation. The full set of actions emitted by Vaulx handlers is:
+
+| Action | Trigger |
+|--------|---------|
+| `auth.login` | A user successfully authenticates and a session is established |
+| `file.upload` | A file upload completes and the file's status transitions to `active` |
+| `file.delete` | A file is soft-deleted (status set to `deleted`); recoverable from trash |
+| `file.hard_delete` | An admin permanently deletes a file via `DELETE /files/{fileID}?permanent=true` |
+| `file.rename` | A file's display name is updated |
+| `file.move` | A file is moved to a different folder |
+| `file.restore` | An admin restores a soft-deleted file from trash via `POST /admin/trash/{fileID}/restore` |
+| `folder.create` | A new folder is created |
+| `folder.delete` | A folder is deleted |
+| `folder.rename` | A folder's display name is updated |
+| `folder.zip_download` | A folder is downloaded as a ZIP archive |
+| `share.revoke` | A share link is revoked |
+| `profile.name_updated` | A user updates their display name |
+| `profile.password_updated` | A user changes their password |
+
+## Database Schema
+
+The `audit_log` table is defined in `migrations/001_initial.up.sql`:
+
+```sql
+CREATE TABLE audit_log (
+  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id       UUID REFERENCES users(id),
+  action        TEXT NOT NULL,
+  resource_type TEXT,
+  resource_id   UUID,
+  meta          JSONB,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+```
+
+- **`user_id`** — The user who performed the action. Nullable so that system-generated events can be logged without an actor.
+- **`resource_type`** — The kind of resource affected (`file`, `folder`, etc.). Nullable for actions without a specific resource (e.g., `auth.login`).
+- **`resource_id`** — The UUID of the affected resource. Nullable for the same reason.
+- **`meta`** — An optional `JSONB` blob for action-specific context (e.g., old and new names on a rename).
+- **`created_at`** — The wall-clock timestamp of when the action occurred, defaulting to `NOW()`.
+
+## Viewing the Audit Log
+
+The audit log viewer is available exclusively to admins at `GET /admin/audit`.
+
+### Paginated view
+
+By default, the page displays 50 entries per page, sorted newest-first. Use the `?page=` query parameter to navigate:
+
+```
+GET /admin/audit          # page 1 (entries 1–50)
+GET /admin/audit?page=2   # page 2 (entries 51–100)
+GET /admin/audit?page=3   # page 3 (entries 101–150)
+```
+
+The underlying query used for pagination (`ListAuditLogPage`) joins on the `users` table to surface the actor's name and email alongside each entry:
+
+```sql
+SELECT
+  al.id,
+  al.user_id,
+  al.action,
+  al.resource_type,
+  al.resource_id,
+  al.meta,
+  al.created_at,
+  u.name  AS actor_name,
+  u.email AS actor_email
+FROM audit_log al
+LEFT JOIN users u ON u.id = al.user_id
+ORDER BY al.created_at DESC
+LIMIT $1 OFFSET $2;
+```
+
+### Filtering by action
+
+Append `?action=<action>` to narrow results to a single action type. When an action filter is present, pagination is disabled and up to **100 entries** are returned:
+
+```
+GET /admin/audit?action=file.hard_delete
+GET /admin/audit?action=auth.login
+GET /admin/audit?action=file.restore
+```
+
+The filter uses an exact string match against the `action` column (`WHERE al.action = $1`), so the value must match one of the action strings from the table above exactly.
+
+<Note>
+  The audit log is **append-only** — there is no delete or truncate endpoint exposed via the API or admin panel. Entries remain permanently in the database. The table is indexed on both `user_id` and `created_at DESC`, keeping paginated and user-scoped queries fast even as the log grows:
+
+  ```sql
+  CREATE INDEX idx_audit_log_user_id    ON audit_log(user_id);
+  CREATE INDEX idx_audit_log_created_at ON audit_log(created_at DESC);
+  ```
+</Note>
+
+<Tip>
+  Use `?action=auth.login` to monitor login activity and detect unusual access patterns. Use `?action=file.hard_delete` to maintain a record of all permanent deletions and confirm that only admins are performing them. Use `?action=file.restore` to track which files were recovered from trash and by whom.
+</Tip>

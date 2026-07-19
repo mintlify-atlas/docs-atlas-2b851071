@@ -1,0 +1,177 @@
+---
+title: "Deploy Vaulx with Docker or Dokploy"
+sidebarTitle: "Deployment"
+description: "Deploy Vaulx to production using Docker Compose on any Linux host, or use Dokploy for a managed deploy pipeline with built-in TLS and domain routing."
+---
+
+Vaulx ships as a single Alpine-based Docker image with all SQL migrations embedded at build time. There is no migration tool to run separately — on every startup the server applies any pending migrations, seeds the admin account if it does not yet exist, and starts serving traffic. This makes production deployments straightforward: build the image, supply environment variables, and expose port `8080` behind a TLS-terminating reverse proxy.
+
+## Docker Compose Deployment
+
+This approach works on any Linux host (VPS, dedicated server, etc.) where Docker and Docker Compose are installed.
+
+<Steps>
+  <Step title="Set your environment variables">
+    Copy `.env.example` to `.env` and fill in every variable with production values. At minimum, change `SESSION_SECRET` to a cryptographically random string of at least 32 characters before the app is publicly accessible.
+
+    ```bash
+    cp .env.example .env
+    ```
+
+    ```bash
+    # .env — production values
+    DATABASE_URL=postgres://vaulx:strongpassword@db:5432/vaulx?sslmode=disable
+    SESSION_SECRET=your-32-plus-char-random-secret-here
+    PORT=8080
+
+    SEED_ADMIN_EMAIL=admin@yourdomain.com
+    SEED_ADMIN_PASSWORD=StrongAdminPassword1
+
+    HETZNER_ACCESS_KEY=your-access-key
+    HETZNER_SECRET_KEY=your-secret-key
+    HETZNER_S3_ENDPOINT=https://fsn1.your-objectstorage.com
+    HETZNER_BUCKET=vaulx
+
+    # Injected into the Postgres container
+    POSTGRES_USER=vaulx
+    POSTGRES_PASSWORD=strongpassword
+    POSTGRES_DB=vaulx
+    ```
+  </Step>
+  <Step title="Build and start the stack in the background">
+    ```bash
+    docker compose up --build -d
+    ```
+
+    Docker Compose builds the Vaulx image from the `Dockerfile` in the repo root, starts the `db` (Postgres 16 Alpine) and `app` services, waits for the database health check to pass, then launches the app. Migrations and admin seeding happen automatically on first boot.
+  </Step>
+  <Step title="Add a domain and TLS">
+    Place a reverse proxy (Nginx, Caddy, Traefik, etc.) in front of the Vaulx container to terminate TLS and forward traffic to port `8080`. Vaulx itself does not handle TLS.
+
+    Example Caddyfile snippet:
+
+    ```
+    yourdomain.com {
+        reverse_proxy localhost:8080
+    }
+    ```
+
+    Caddy automatically provisions a Let's Encrypt certificate. Nginx and Traefik require separate certificate configuration.
+  </Step>
+</Steps>
+
+---
+
+## Dokploy Deployment
+
+[Dokploy](https://dokploy.com) is an open-source platform-as-a-service that manages deployments, databases, and domains on your own server. It is the recommended managed deployment path for Vaulx.
+
+<Steps>
+  <Step title="Create a Postgres service in Dokploy">
+    In the Dokploy dashboard, navigate to **Services** and create a new **Postgres** service. Use PostgreSQL 16 and note the generated connection string — you will need it for `DATABASE_URL` in the next steps.
+
+    <Tip>
+      Dokploy's internal service networking lets you reference the Postgres container by its internal hostname, so `sslmode=disable` is safe within the same project.
+    </Tip>
+  </Step>
+  <Step title="Create an application in Dokploy">
+    Create a new **Application** with the following settings:
+
+    | Setting | Value |
+    |---------|-------|
+    | **Source** | Your Git repository (GitHub, GitLab, or Gitea) |
+    | **Build type** | Dockerfile |
+    | **Dockerfile path** | `Dockerfile` (repo root) |
+    | **Published port** | `8080` |
+
+    Dokploy will clone the repository and build the Docker image using the two-stage `Dockerfile` (Go builder → Alpine runtime).
+  </Step>
+  <Step title="Set all environment variables">
+    In the **Environment** tab of your application, add the following variables:
+
+    ```
+    DATABASE_URL=postgres://user:pass@your-pg-host:5432/vaulx?sslmode=disable
+    SESSION_SECRET=<random 32+ char string>
+    PORT=8080
+    SEED_ADMIN_EMAIL=admin@yourdomain.com
+    SEED_ADMIN_PASSWORD=<strong password>
+    HETZNER_ACCESS_KEY=<your access key>
+    HETZNER_SECRET_KEY=<your secret key>
+    HETZNER_S3_ENDPOINT=https://fsn1.your-objectstorage.com
+    HETZNER_BUCKET=<your bucket name>
+    ```
+  </Step>
+  <Step title="Deploy the application">
+    Trigger a deploy from the Dokploy dashboard (or push to your linked branch). Dokploy builds the image and starts the container. On first start the app will:
+
+    1. Run all pending database migrations automatically
+    2. Seed the admin account using `SEED_ADMIN_EMAIL` and `SEED_ADMIN_PASSWORD` if the account does not yet exist
+    3. Start serving HTTP on `$PORT`
+
+    Check the **Logs** tab to confirm migrations completed and the server is listening.
+  </Step>
+  <Step title="Add a domain and enable HTTPS">
+    In the **Domains** tab of your Dokploy application, add your domain and enable **HTTPS**. Dokploy provisions a Let's Encrypt certificate and routes traffic to port `8080` automatically.
+
+    HTTPS is required — the session cookie has `Secure: true`, so the login flow will not work over plain HTTP in production.
+  </Step>
+</Steps>
+
+---
+
+## Environment Variables Reference
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `DATABASE_URL` | Yes | — | Postgres connection string, e.g. `postgres://user:pass@host:5432/db?sslmode=disable` |
+| `SESSION_SECRET` | Yes | — | Random string ≥ 32 chars used to sign and verify session cookies |
+| `PORT` | No | `8080` | HTTP port the server listens on |
+| `SEED_ADMIN_EMAIL` | Yes | — | Email address for the admin account seeded on first boot |
+| `SEED_ADMIN_PASSWORD` | Yes | — | Password for the seeded admin account (min 8 chars, at least one digit) |
+| `HETZNER_ACCESS_KEY` | Yes | — | Hetzner Object Storage access key (S3-compatible) |
+| `HETZNER_SECRET_KEY` | Yes | — | Hetzner Object Storage secret key |
+| `HETZNER_S3_ENDPOINT` | Yes | `https://fsn1.your-objectstorage.com` | Base URL of the S3-compatible storage endpoint |
+| `HETZNER_BUCKET` | Yes | `vaulx` | Bucket name where uploaded files are stored |
+
+<Warning>
+  Change `SESSION_SECRET` to a strong, random value before exposing Vaulx publicly. The default value in `.env.example` and `docker-compose.yml` is a placeholder. Any session signed with the placeholder secret can be forged.
+</Warning>
+
+<Warning>
+  The session cookie is configured with `Secure: true`. Browsers will refuse to send this cookie over plain HTTP, which means the login flow will silently fail unless Vaulx is served over HTTPS. Always place a TLS-terminating reverse proxy (Caddy, Nginx, Traefik) or enable HTTPS in Dokploy before directing real users to your deployment.
+</Warning>
+
+---
+
+## First-Boot Behavior
+
+Every time the Vaulx container starts it runs the following sequence before accepting HTTP traffic:
+
+1. **Migrations** — `golang-migrate` applies any pending `.sql` files from the `migrations/` directory, which is embedded directly into the binary at build time via `embed.FS`. No external migration tooling is needed on the host.
+2. **Admin seed** — If no user with `SEED_ADMIN_EMAIL` exists in the database, the server creates an `admin`-role account with the provided email and password. Subsequent restarts skip this step if the account already exists.
+3. **Storage CORS** — The server sets the CORS policy on the configured S3 bucket to allow browser-initiated presigned uploads from your domain.
+4. **HTTP listener** — The server starts accepting requests on `$PORT`.
+
+---
+
+## Docker Image Details
+
+The `Dockerfile` uses a two-stage build:
+
+| Stage | Base image | Purpose |
+|-------|------------|---------|
+| `builder` | `golang:1.25-alpine` | Installs templ, downloads Go modules, runs `templ generate`, compiles the `server` binary with `CGO_ENABLED=0` |
+| Runtime | `alpine:3.20` | Copies only the compiled `server` binary and the `web/static/` directory; adds `ca-certificates` and `tzdata` |
+
+The resulting image is minimal — no Go toolchain, no source code. All SQL migration files are embedded into the `server` binary at compile time, so the runtime image contains everything needed to deploy and upgrade the schema with no extra tooling.
+
+```dockerfile
+# Final stage — what actually runs in production
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates tzdata
+WORKDIR /app
+COPY --from=builder /app/server .
+COPY --from=builder /app/web/static ./web/static
+EXPOSE 8080
+CMD ["./server"]
+```

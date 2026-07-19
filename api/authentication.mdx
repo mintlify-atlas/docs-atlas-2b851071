@@ -1,0 +1,164 @@
+---
+title: "Authenticating with the Vaulx API"
+sidebarTitle: "Authentication"
+description: "How to authenticate with the Vaulx API using session cookies: login via POST /auth/login, cookie attributes, curl usage, and error handling."
+---
+
+Vaulx uses server-side session cookies — not API keys or JWTs. When you `POST` valid credentials to `/auth/login`, the server creates a session record in PostgreSQL and sends a `vaulx-session` cookie back to the client. Every subsequent request to a protected route must include that cookie. There is no token-based alternative; if the cookie is absent or the session is invalid, the server redirects you to `/auth/login`.
+
+## Login Flow
+
+<Steps>
+
+  <Step title="Render the login page">
+    Send a `GET /auth/login` request. The server returns a full HTML login page.
+
+    ```bash
+    curl http://localhost:8080/auth/login
+    ```
+  </Step>
+
+  <Step title="Submit credentials">
+    `POST` your credentials as a URL-encoded form body. On success, the server sets the `vaulx-session` cookie and issues a `302 Found` redirect to `/files`.
+
+    ```bash
+    curl -c cookies.txt -X POST http://localhost:8080/auth/login \
+      -d 'email=admin@example.com&password=yourpassword'
+    ```
+
+    <ParamField body="email" type="string" required>
+      The email address associated with the user account.
+    </ParamField>
+
+    <ParamField body="password" type="string" required>
+      The account password. Verified against a bcrypt hash stored in the database.
+    </ParamField>
+
+    <Warning>
+      The `Content-Type` must be `application/x-www-form-urlencoded` (the default for HTML forms and curl `-d` flags). Sending JSON to this endpoint will not work.
+    </Warning>
+  </Step>
+
+  <Step title="Use the session cookie on subsequent requests">
+    Pass the saved cookie jar on every authenticated request. The cookie is validated server-side on each call.
+
+    ```bash
+    curl -b cookies.txt http://localhost:8080/files
+    ```
+  </Step>
+
+</Steps>
+
+## Session Cookie
+
+After a successful login, the server writes a cookie with the following attributes — sourced directly from `sessionStore.Options` in `cmd/server/main.go`:
+
+| Attribute | Value | Notes |
+|---|---|---|
+| **Name** | `vaulx-session` | Fixed cookie name used by the gorilla/sessions store |
+| **Path** | `/` | Cookie is sent on all paths |
+| **MaxAge** | `604800` seconds (7 days) | Session expires one week after login |
+| **HttpOnly** | `true` | Not accessible via JavaScript `document.cookie` |
+| **SameSite** | `Lax` | Sent on top-level navigations; protects against most CSRF |
+| **Secure** | `true` | Only sent over HTTPS connections |
+
+<Warning>
+  The `Secure` flag means the login cookie will **not** be set over plain HTTP in production. You must configure TLS directly on the Vaulx server or place it behind a TLS-terminating reverse proxy (e.g. Caddy, Nginx, or a cloud load balancer) before attempting to log in from a non-localhost client.
+</Warning>
+
+### Cookie Backend
+
+Session data is stored in PostgreSQL via [`pgstore`](https://github.com/antonlindstrom/pgstore) — the cookie itself contains only a session ID, not any user data. The store runs a background cleanup goroutine every 5 minutes to purge expired sessions from the database.
+
+### Session Values
+
+Once authenticated, the following values are written into the server-side session record and loaded into the request context on every protected request:
+
+| Key | Type | Description |
+|---|---|---|
+| `user_id` | `string` (UUID) | Unique identifier of the authenticated user |
+| `role` | `string` | User's role — `admin` or `editor` |
+| `email` | `string` | User's email address |
+| `name` | `string` | User's display name |
+
+These values are surfaced to handlers as a `UserContext` struct (defined in `internal/auth/context.go`):
+
+```go
+type UserContext struct {
+    ID    string // UUID string of the authenticated user
+    Email string
+    Name  string
+    Role  string
+}
+```
+
+Handlers retrieve it with `auth.GetCurrentUser(r.Context())`.
+
+## Access Control
+
+Two helper functions in `internal/auth/acl.go` govern what an authenticated user may do:
+
+```go
+// CanAccess reports whether user may access a resource owned by ownerID.
+// admin bypasses all checks; others require ownership.
+func CanAccess(user UserContext, ownerID string) bool {
+    if user.Role == "admin" {
+        return true
+    }
+    return user.ID == ownerID
+}
+
+// CanEdit reports whether the user may create or modify resources.
+func CanEdit(user UserContext) bool {
+    return user.Role == "admin" || user.Role == "editor"
+}
+```
+
+- **`admin`** — full access to all resources and all admin routes under `/admin/`.
+- **`editor`** — can create and modify resources they own.
+- Any other role — read-only access to owned resources.
+
+## Logout
+
+Sending `POST /auth/logout` sets the session's `MaxAge` to `-1`, which instructs the browser to immediately expire the cookie, and then redirects to `/auth/login`.
+
+```bash
+curl -b cookies.txt -X POST http://localhost:8080/auth/logout
+```
+
+## curl Walkthrough
+
+The following end-to-end example logs in, lists files, and then logs out:
+
+```bash
+# 1. Log in and save the session cookie to a local file
+curl -c cookies.txt -X POST http://localhost:8080/auth/login \
+  -d 'email=admin@example.com&password=yourpassword'
+
+# 2. Use the saved cookie on subsequent requests
+curl -b cookies.txt http://localhost:8080/files
+
+# 3. Call a JSON API endpoint
+curl -b cookies.txt http://localhost:8080/api/folders \
+  -H 'Accept: application/json'
+
+# 4. Log out
+curl -b cookies.txt -c cookies.txt -X POST http://localhost:8080/auth/logout
+```
+
+<Tip>
+  The `-c cookies.txt` flag on the logout call tells curl to update the saved cookie file so the expired cookie is written back to disk, preventing it from being inadvertently reused.
+</Tip>
+
+## Error Responses
+
+| Scenario | HTTP status | Behaviour |
+|---|---|---|
+| Wrong email or password | `401 Unauthorized` | Re-renders the login page with the message **"Invalid email or password"** |
+| Protected route accessed without a session cookie | `302 Found` | Redirects to `/auth/login` |
+| Session cookie present but session record is new/invalid | `302 Found` | Redirects to `/auth/login` |
+| Authenticated but insufficient role for an admin route | `403 Forbidden` | Returns a `403` HTML error page |
+
+<ResponseField name="error message (login)" type="string">
+  On a `401` response the login page is re-rendered with an inline error message: `"Invalid email or password"`. No JSON error body is returned.
+</ResponseField>

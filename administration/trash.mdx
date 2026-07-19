@@ -1,0 +1,124 @@
+---
+title: "Trash and File Restoration in Vaulx"
+sidebarTitle: "Trash"
+description: "Understand how soft-deleted files are stored, browse the admin trash panel, and restore or permanently remove files."
+---
+
+Vaulx uses a two-stage deletion model to protect against accidental data loss. When a file is deleted through the normal UI, it is soft-deleted — its `status` column is set to `'deleted'` and it becomes invisible in the file browser, but the underlying record in PostgreSQL and the object in S3 remain intact. Admins can review all soft-deleted files in the `/admin/trash` panel and either restore them with a single click or permanently remove them when the data is no longer needed.
+
+## Soft delete vs hard delete
+
+<CardGroup cols={2}>
+  <Card title="Soft Delete" icon="trash">
+    **Route:** `DELETE /files/{fileID}`
+
+    Sets the file's `status` to `'deleted'`. The database row and the S3 object are preserved. The file disappears from the regular file browser but appears in `/admin/trash`. Logged as `file.delete` in the audit log.
+
+    Available to the editor who uploaded the file or any admin.
+  </Card>
+  <Card title="Hard Delete" icon="fire">
+    **Route:** `DELETE /files/{fileID}?permanent=true`
+
+    Admin-only. Calls `storage.DeleteObject` to remove the S3 object, then calls `HardDeleteFile` to remove the database row entirely. The row cannot be recovered. Logged as `file.hard_delete` in the audit log.
+  </Card>
+</CardGroup>
+
+The distinction is enforced in `handler.FilesHandler.DeleteFile`:
+
+```go
+permanent := r.URL.Query().Get("permanent") == "true"
+if permanent && user.Role != "admin" {
+    http.Error(w, "forbidden", http.StatusForbidden)
+    return
+}
+```
+
+Non-admin users who attempt a permanent delete receive `403 Forbidden`.
+
+## Who can delete files
+
+| User | Soft delete | Hard delete |
+|---|---|---|
+| Admin | ✅ Any file | ✅ Any file (`?permanent=true`) |
+| Editor | ✅ Files they uploaded | ❌ Not permitted |
+| Viewer | ❌ Not permitted | ❌ Not permitted |
+
+Ownership is checked by comparing `file.uploaded_by` to the requesting user's ID:
+
+```go
+if user.Role != "admin" && (!file.UploadedBy.Valid || file.UploadedBy.String() != user.ID) {
+    http.Error(w, "forbidden", http.StatusForbidden)
+    return
+}
+```
+
+## File status lifecycle
+
+Every file moves through the following states, constrained by a `CHECK` in the schema:
+
+```sql
+status TEXT NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending', 'active', 'deleted'))
+```
+
+```
+pending  →  active  →  deleted
+                            ↓
+                       (hard delete removes the row entirely)
+```
+
+| Status | Meaning |
+|---|---|
+| `pending` | Upload initiated but not yet confirmed |
+| `active` | Upload confirmed; visible in the file browser |
+| `deleted` | Soft-deleted; visible only in `/admin/trash` |
+
+## Trash panel
+
+**Route:** `GET /admin/trash`
+
+Admin-only. Displays all files where `status = 'deleted'`, fetched via the `ListDeletedFiles` query. Each row in the panel shows:
+
+- File name
+- Human-readable size (e.g. `4.2 MB`)
+- Uploader display name
+- Creation date formatted as `Jan 2, 2006`
+
+Non-admin requests receive `403 Access denied`.
+
+## Restoring a file
+
+**Route:** `POST /admin/trash/{fileID}/restore`
+
+Admin-only. Calls `RestoreFile` to set the file's `status` back to `'active'`, making it visible in the file browser again. On success, the action is written to the audit log with action `file.restore`.
+
+```go
+_, _ = h.queries.CreateAuditLog(r.Context(), db.CreateAuditLogParams{
+    UserID:       userUUID,
+    Action:       "file.restore",
+    ResourceType: &resourceType,
+    ResourceID:   fileUUID,
+})
+```
+
+A successful restore triggers an `HX-Trigger` response header with a `showToast` event showing `"File restored"`. If the `fileID` is not found in the database `RestoreFile` returns a `404 Not Found` response.
+
+<Steps>
+  <Step title="Navigate to the trash panel">
+    Go to `/admin/trash`. You must be logged in as an admin.
+  </Step>
+  <Step title="Find the file to restore">
+    Locate the file by name, uploader, or date. The panel lists all soft-deleted files across all users.
+  </Step>
+  <Step title="Click Restore">
+    Click the **Restore** button next to the file. Vaulx sends `POST /admin/trash/{fileID}/restore` and the file reappears in the main file browser under its original folder.
+  </Step>
+</Steps>
+
+<Warning>
+  Hard-deleted files are permanently removed from both S3 and the database. This action cannot be undone. There is no recovery path once `DELETE /files/{fileID}?permanent=true` completes successfully.
+</Warning>
+
+<Note>
+  Restoring a file does not restore its original folder if that folder was deleted. The file will still reference the original `folder_id` in the database, which may now point to a non-existent folder. In that case the file will not appear under any folder in the browser until it is moved to a valid folder.
+</Note>

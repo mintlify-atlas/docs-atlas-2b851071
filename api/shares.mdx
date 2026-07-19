@@ -1,0 +1,205 @@
+---
+title: "Share Link API Endpoints"
+sidebarTitle: "Shares"
+description: "Create, list, resolve, and revoke public share links for individual files and entire folder trees with optional expiry and view limits."
+---
+
+Share links let editors and admins publish read-only access to a file or folder without requiring the recipient to have a Vaulx account. Each link is identified by a 64-character cryptographically random hex slug and expires automatically after seven days. Resolving or downloading via a share link never requires authentication. Revoking a share hard-deletes the row and writes a `share.revoke` entry to the audit log.
+
+---
+
+## Create file share link
+
+<ParamField path="fileID" type="uuid" required>
+  The UUID of the active file to share.
+</ParamField>
+
+**`POST /files/{fileID}/share`**
+
+Generates a 7-day public share link for a single file. If an active (non-expired) share already exists for this file, the existing share URL is returned rather than creating a duplicate.
+
+**Authentication:** editor role or higher required.
+
+**Response**
+
+```json
+{ "url": "/s/<slug>" }
+```
+
+<Note>
+  The slug is a 32-byte random value encoded as 64 lowercase hex characters. Combine it with your Vaulx base URL to get the full public link, e.g. `https://vault.example.com/s/<slug>`.
+</Note>
+
+---
+
+## Create folder share link
+
+<ParamField path="folderID" type="uuid" required>
+  The UUID of the folder to share.
+</ParamField>
+
+**`POST /files/folders/{folderID}/share`**
+
+Generates a 7-day public share link for an entire folder tree. Visitors can browse subfolders, preview files, and download individual assets through the public interface. If an active share already exists for this folder, the existing URL is returned.
+
+**Authentication:** editor role or higher required.
+
+**Response**
+
+```json
+{ "url": "/s/<slug>" }
+```
+
+---
+
+## Resolve share
+
+<ParamField path="slug" type="string" required>
+  The 64-character hex slug from the share URL.
+</ParamField>
+
+**`GET /s/{slug}`**
+
+Public endpoint — no authentication required. Renders an HTML page for the shared resource.
+
+- **File shares** → renders `SharedFilePage` with a presigned S3 preview URL.
+- **Folder shares** → renders `SharedFolderPage` listing subfolders and files. Use the `?folder=<uuid>` query parameter to navigate into a subfolder; navigation is strictly confined to the shared root's tree — any UUID outside the tree returns **404**.
+
+Each successful resolution increments the share's `view_count`.
+
+| Condition | Status |
+|---|---|
+| Slug not found | 404 Not Found |
+| `expires_at` is in the past | 410 Gone |
+| `view_count >= max_views` | 410 Gone |
+
+<ParamField query="folder" type="uuid">
+  Folder share only. Navigate into a subfolder within the shared tree. The UUID must be the shared root or one of its descendants (depth-capped at 64 levels).
+</ParamField>
+
+---
+
+## Direct file download
+
+<ParamField path="slug" type="string" required>
+  The 64-character hex slug of a **file** share.
+</ParamField>
+
+**`GET /s/{slug}/download`**
+
+Forces a file-save download by redirecting to a presigned S3 GET URL with `Content-Disposition: attachment`. This endpoint only works for file shares — folder share slugs return **404**.
+
+**No authentication required.**
+
+- Returns **302** redirect to the presigned S3 URL.
+- Returns **410 Gone** if the link is expired or the view limit has been reached.
+- Returns **404** if the slug is a folder share or is not found.
+
+---
+
+## Download file inside folder share
+
+<ParamField path="slug" type="string" required>
+  The 64-character hex slug of a **folder** share.
+</ParamField>
+
+<ParamField path="fileID" type="uuid" required>
+  The UUID of the file to download. Must belong to the shared folder tree.
+</ParamField>
+
+**`GET /s/{slug}/file/{fileID}`**
+
+Downloads a specific file that lives inside a publicly shared folder tree. The `fileID` is validated against the shared root — any file outside the tree returns **404**.
+
+**No authentication required.**
+
+- Returns **302** redirect to the presigned S3 GET URL.
+- Returns **404** if the slug is not a folder share, the file is not found, or the file is outside the shared tree.
+- Returns **410 Gone** if the share has expired.
+
+---
+
+## List shares
+
+**`GET /shares`**
+
+Renders an HTML page listing share links with their details.
+
+**Authentication:** editor role or higher required.
+
+- **Admins** see all shares across every user.
+- **Editors** see only shares they created.
+
+**Response fields per share row**
+
+<ResponseField name="id" type="uuid">
+  Unique share identifier.
+</ResponseField>
+
+<ResponseField name="file_name" type="string">
+  Name of the shared file or folder.
+</ResponseField>
+
+<ResponseField name="target_type" type="string">
+  `file` or `folder`.
+</ResponseField>
+
+<ResponseField name="slug" type="string">
+  The public slug used to construct the share URL.
+</ResponseField>
+
+<ResponseField name="creator_name" type="string">
+  Display name of the user who created the share.
+</ResponseField>
+
+<ResponseField name="created" type="string">
+  Human-readable creation date (e.g. `Jan 2, 2006`).
+</ResponseField>
+
+<ResponseField name="expires" type="string">
+  Human-readable expiry date, or `Never` if no expiry is set.
+</ResponseField>
+
+<ResponseField name="view_count" type="integer">
+  Number of times the share page has been resolved.
+</ResponseField>
+
+---
+
+## Revoke share
+
+<ParamField path="shareID" type="uuid" required>
+  The UUID of the share link to revoke.
+</ParamField>
+
+**`DELETE /shares/{shareID}`**
+
+Permanently deletes a share link. The public URL immediately becomes invalid.
+
+**Authentication:** admin, or the editor who originally created the share.
+
+- Returns **200 OK** with an `HX-Trigger` header that fires a success toast: `{"showToast":{"message":"Share link revoked","type":"success"}}`.
+- Returns **403 Forbidden** if the caller is not admin and does not own the share.
+- Returns **404** if the share does not exist.
+- Writes a `share.revoke` entry to the audit log.
+
+---
+
+## Share model
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | UUID | Primary key |
+| `file_id` | UUID \| null | Set for file shares; null for folder shares |
+| `folder_id` | UUID \| null | Set for folder shares; null for file shares |
+| `slug` | text | 64-char hex; unique |
+| `share_type` | text | Always `public` |
+| `expires_at` | timestamptz \| null | Null means no expiry |
+| `max_views` | int \| null | Null means unlimited |
+| `view_count` | int | Incremented on each resolution |
+| `created_by` | UUID | FK → users.id |
+| `created_at` | timestamptz | Row creation time |
+
+<Warning>
+  A share row can reference either `file_id` **or** `folder_id`, never both. This is enforced at the database level by a `CHECK` constraint.
+</Warning>

@@ -1,20 +1,68 @@
 ---
-title: "Introduction"
-description: "Welcome to your project"
+title: "Vaulx: Private File Asset Platform"
+sidebarTitle: "Home"
+description: "Vaulx is a self-hosted file platform for teams. Upload, organise, and share files with role-based access control, public share links, and a full audit trail."
 ---
 
-Write a short description of your product here. What it does, who it's for, and what they can accomplish with it.
+Vaulx is a self-hosted, private file asset platform built in Go. It gives teams a clean, fast interface to upload files directly to S3-compatible object storage, organise them in folders, share them via public links, and control who can access what — all backed by a complete audit log.
 
-<Tip>
-  Ready to make this your own? Start by editing this page. Update your `docs.json` file to customize your site. Then fill out the [Quickstart](/quickstart) page.
-</Tip>
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Run Vaulx locally in minutes with Docker or the Go toolchain.
+  </Card>
+  <Card title="Deployment" icon="server" href="/deployment">
+    Deploy Vaulx to production with Docker Compose or Dokploy.
+  </Card>
+  <Card title="Core Features" icon="folder-open" href="/features/files-and-folders">
+    Browse files, create folders, upload, share, and preview assets.
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/overview">
+    Explore every HTTP endpoint with parameters and response shapes.
+  </Card>
+</CardGroup>
 
-<Card title="Quickstart" icon="rocket" href="/quickstart">
-  This card links to the quickstart page in your project.
-</Card>
-<Card title="Components" icon="puzzle-piece" href="https://mintlify.com/docs/components">
-  Add cards, callouts, steps, tabs, and more to design and structure your pages.
-</Card>
-<Card title="Settings" icon="gear" href="https://mintlify.com/docs/organize/settings">
-  Set your site name, branding, and navigation in the `docs.json` file.
-</Card>
+## What Vaulx does
+
+Vaulx is designed for teams that need a private, auditable file store without the complexity of a full-blown cloud storage product. Files are stored in any S3-compatible bucket (Hetzner Object Storage, AWS S3, MinIO) — Vaulx handles metadata, access control, and sharing on top.
+
+<CardGroup cols={3}>
+  <Card title="File Management" icon="file">
+    Upload files directly to S3 via presigned URLs, browse folder hierarchies, rename, move, and soft-delete.
+  </Card>
+  <Card title="Role-Based Access" icon="shield-halved">
+    Three roles — admin, editor, viewer — with per-resource permission grants for fine-grained sharing.
+  </Card>
+  <Card title="Share Links" icon="link">
+    Generate 7-day public share links for files and entire folder trees, with view-count tracking.
+  </Card>
+  <Card title="ZIP Downloads" icon="file-zipper">
+    Stream folder contents as a ZIP on the fly, or prepare an async background ZIP for large trees.
+  </Card>
+  <Card title="Audit Trail" icon="clock-rotate-left">
+    Every login, upload, delete, rename, and share action is recorded and searchable by admins.
+  </Card>
+  <Card title="Admin Panel" icon="gear">
+    Manage users, review the audit log, restore soft-deleted files, and grant permissions — all in-app.
+  </Card>
+</CardGroup>
+
+## Getting started
+
+<Steps>
+  <Step title="Set up prerequisites">
+    Install Go 1.25+ and PostgreSQL 16, or use Docker Compose to start both with a single command.
+  </Step>
+  <Step title="Configure environment variables">
+    Copy `.env.example` to `.env` and fill in your database URL, session secret, and Hetzner Object Storage credentials.
+  </Step>
+  <Step title="Start the server">
+    Run `go run ./cmd/server` (or `docker compose up --build`). Migrations run automatically on first boot and the admin account is seeded.
+  </Step>
+  <Step title="Log in">
+    Open `http://localhost:8080` and sign in with the credentials from `SEED_ADMIN_EMAIL` and `SEED_ADMIN_PASSWORD`.
+  </Step>
+</Steps>
+
+<Note>
+  The session cookie requires HTTPS in production (`Secure: true`). Make sure to configure TLS or a reverse proxy before exposing Vaulx publicly.
+</Note>

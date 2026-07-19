@@ -1,0 +1,113 @@
+---
+title: "Search Files and Preview Assets in Vaulx"
+sidebarTitle: "Search & Preview"
+description: "Search across all active files and folders by name, and preview images and other assets inline in the file browser sidebar using short-lived presigned S3 URLs."
+---
+
+Vaulx provides a name-based search that spans all active files and folders in a single request, and an inline preview panel that generates a 5-minute presigned S3 URL to display any asset without triggering a full download. Both features are deeply integrated with the HTMX-driven file browser — search results and previews swap into the existing page without a full reload.
+
+## File and Folder Search
+
+```http
+GET /files/search?q=<term>
+```
+
+The search endpoint performs a case-insensitive `ILIKE` match against file and folder names:
+
+- **Files:** matches any `active` file whose `name` contains the query string (up to 100 results).
+- **Folders:** matches any folder whose `name` contains the query string (up to 50 results).
+- **Empty query:** if `q` is omitted or blank, the server falls back to the normal root listing (`GET /files`), so search forms can always safely submit.
+
+### Access Control
+
+| Role | Visible results |
+|------|----------------|
+| Admin | All active files and all folders across all users |
+| Editor / other authenticated user | Only files they uploaded or have explicit permissions for, and folders they own or have been granted access to |
+
+### HTMX Partial vs Full Page
+
+The search endpoint detects the `HX-Request: true` header sent automatically by HTMX and returns the appropriate response:
+
+| Request type | Response |
+|-------------|---------|
+| HTMX (HX-Request: true) | `SearchResults` HTML partial — swaps into `#browser-content` |
+| Full browser navigation | `SearchPage` — complete HTML page with layout |
+
+```bash
+# Full page (browser navigation)
+curl https://your-vaulx.example.com/files/search?q=report \
+  -b "session=<token>"
+
+# HTMX partial (in-browser fetch)
+curl https://your-vaulx.example.com/files/search?q=report \
+  -b "session=<token>" \
+  -H "HX-Request: true"
+```
+
+## Inline File Preview
+
+```http
+GET /api/file/{fileID}/preview
+```
+
+The preview endpoint returns an HTML partial (`PreviewPanel`) containing a **5-minute presigned S3 GET URL** for the requested file. The file browser sidebar calls this endpoint when you click a file card, loading the preview without navigating away or downloading the file.
+
+**Required:** An authenticated session. The requesting user must either own the file or have an explicit permission record for it.
+
+**What the panel shows:**
+
+- File name, MIME type, size, uploader name, and upload date.
+- For images: an `<img>` tag pointing at the presigned URL, rendered inline.
+- For all other types: a download link using the presigned URL.
+
+```bash
+curl https://your-vaulx.example.com/api/file/018f2a3b-4c5d-7e8f-9a0b-1c2d3e4f5a6b/preview \
+  -b "session=<token>"
+```
+
+<Note>
+  Preview URLs expire after **5 minutes** (`PresignGETWithTTL` with a 5-minute TTL). If the sidebar panel has been open for longer than that, reloading the preview will issue a fresh presigned URL. Thumbnail URLs shown in the file card grid use the default presign TTL of **15 minutes** (`PresignGET`).
+</Note>
+
+### Image Thumbnails in the Card Grid
+
+When the file browser builds its card grid, it calls `PresignGET` for every file whose `mime_type` starts with `image/`. The resulting URL is stored in the `ThumbURL` field of the view model and rendered as an `<img>` inside the file card — giving you a live thumbnail without any server-side image processing.
+
+## Folder JSON API
+
+```http
+GET /api/folders
+```
+
+Returns a flat JSON array of all folders, used by the **Move to folder** picker in the file card context menu.
+
+**Required:** Any authenticated session.
+
+**Response (200 OK):**
+
+```json
+[
+  { "id": "018f2a3b-4c5d-7e8f-9a0b-1c2d3e4f5a6b", "name": "Marketing Assets" },
+  { "id": "019a3b4c-5d6e-8f9a-0b1c-2d3e4f5a6b7c", "name": "Product Photos" }
+]
+```
+
+The array is alphabetically sorted by folder name. Passing the chosen `id` as `folderId` in a `PATCH /files/{fileID}/folder` request moves the file to that folder.
+
+## Quick Reference
+
+<CardGroup cols={2}>
+  <Card title="Files & Folders" icon="folder-open" href="/features/files-and-folders">
+    Browse the file tree, create folders, rename and move files, and download assets.
+  </Card>
+  <Card title="Uploading" icon="cloud-arrow-up" href="/features/uploading">
+    Upload files using presigned S3 PUT URLs or resumable multipart uploads.
+  </Card>
+  <Card title="Sharing" icon="share-nodes" href="/features/sharing">
+    Create public share links for files and folders with expiry and view-count tracking.
+  </Card>
+  <Card title="Files & Folders" icon="magnifying-glass" href="/features/files-and-folders">
+    Learn how soft-delete and the trash panel interact with search results.
+  </Card>
+</CardGroup>

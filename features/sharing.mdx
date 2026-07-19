@@ -1,0 +1,117 @@
+---
+title: "Sharing Files and Folders with Public Links"
+sidebarTitle: "Sharing"
+description: "Generate public share links for files and folders in Vaulx with 7-day expiry, optional view limits, live view-count tracking, and one-click revocation."
+---
+
+Vaulx lets you share any active file or folder with the outside world through a public share link. Share links require no authentication to view, making them ideal for distributing assets to stakeholders, clients, or partners without creating Vaulx accounts for them. Every access increments a live view counter so you always know how many times a link has been used.
+
+## How Share Links Work
+
+When you create a share, Vaulx generates a 64-character hex slug (`crypto/rand`, 32 bytes) and stores a `shares` record that ties the slug to either a file or a folder. The public URL takes the form `/s/<slug>`.
+
+- Links expire **7 days** from the moment they are created.
+- An optional `max_views` cap can be set — once the limit is reached the link stops working.
+- The `view_count` is atomically incremented on each resolved access.
+- If an **active, non-expired share already exists** for the same file or folder, Vaulx returns the existing slug instead of creating a duplicate.
+
+## Creating a File Share
+
+```http
+POST /files/{fileID}/share
+```
+
+**Required role:** Editor or Admin. The target file must have `status = 'active'`.
+
+**Response (200 OK):**
+
+```json
+{ "url": "/s/3f8a2e...64hexchars" }
+```
+
+If an active share already exists for this file the same `url` is returned immediately — no duplicate record is inserted.
+
+## Creating a Folder Share
+
+```http
+POST /files/folders/{folderID}/share
+```
+
+**Required role:** Editor or Admin.
+
+**Response (200 OK):**
+
+```json
+{ "url": "/s/7c1b9d...64hexchars" }
+```
+
+A folder share exposes the complete subtree of the shared root. Recipients can navigate into subfolders, download individual files, and stream or prepare ZIP archives — all without logging in.
+
+## Accessing Shared Content
+
+All public share endpoints are unauthenticated. They check expiry and view limits on every request.
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `GET /s/{slug}` | GET | Renders the shared file preview page or the shared folder browser. |
+| `GET /s/{slug}/download` | GET | Force-download redirect for **file** shares. Sets `Content-Disposition: attachment`. |
+| `GET /s/{slug}/file/{fileID}` | GET | Download a specific file within a **folder** share. The file must belong to the shared folder tree. |
+| `GET /s/{slug}/zip` | GET | Streams the folder tree as a ZIP archive (folder shares only). |
+| `POST /s/{slug}/zip/prepare` | POST | Queues an async ZIP job for large folder trees. Responds with an HTMX fragment that polls `GET /s/{slug}/zip/status` every 3 seconds. |
+| `GET /s/{slug}/zip/status` | GET | Returns the current ZIP job status fragment (pending / ready / failed). |
+
+### File Share Behaviour
+
+When a visitor opens `/s/<slug>` for a file share, Vaulx:
+
+1. Verifies the slug exists and has not expired or exceeded `max_views`.
+2. Generates a presigned S3 GET URL for inline preview (uses the default 15-minute presign TTL).
+3. Renders the public `SharedFilePage` with the file name, expiry date, and preview.
+4. Increments `view_count`.
+
+### Folder Share Behaviour
+
+For folder shares, `/s/<slug>` renders a read-only file browser rooted at the shared folder. Visitors can navigate into subfolders by appending `?folder=<subfolderID>`. The server validates that the requested subfolder is part of the shared root's tree before rendering — navigation is confined to the shared subtree (depth-capped at **64 levels**).
+
+## Share Expiry and View Limits
+
+| Field | Behaviour |
+|-------|-----------|
+| `expires_at` | Set to 7 days after creation. Once `NOW() > expires_at`, all endpoints for that slug return **410 Gone**. |
+| `max_views` | Optional integer. `null` means unlimited. Once `view_count >= max_views`, all endpoints return **410 Gone**. |
+| `view_count` | Incremented atomically on every resolved access to `/s/{slug}`. |
+
+When a link is expired or exhausted, Vaulx renders a friendly "Link expired" error page with HTTP status `410`.
+
+## Managing Shares
+
+<CardGroup cols={2}>
+  <Card title="View Your Shares" icon="list" href="/features/sharing">
+    `GET /shares` — renders the Shares management page. Admins see all shares across all users; editors see only the shares they created.
+  </Card>
+  <Card title="Revoke a Share" icon="trash" href="/features/sharing">
+    `DELETE /shares/{shareID}` — permanently deletes the share record. The slug immediately stops working. Only the share's creator or an admin can revoke it.
+  </Card>
+</CardGroup>
+
+### Revoke via curl
+
+```bash
+curl -X DELETE https://your-vaulx.example.com/shares/018f2a3b-4c5d-7e8f-9a0b-1c2d3e4f5a6b \
+  -b "session=<token>"
+```
+
+On success the server fires an HTMX `showToast` event with the message "Share link revoked" and returns `200 OK`.
+
+<Warning>
+  Share links are **fully public** — anyone who knows the URL can access the content until it expires, its view limit is reached, or it is explicitly revoked. Do not share links to sensitive assets in public channels. If a link is accidentally distributed, revoke it immediately from the Shares management page.
+</Warning>
+
+## Folder Share Security
+
+Subfolder navigation within a folder share is strictly sandboxed:
+
+- The server walks the `parent_id` chain upward for each `?folder=` parameter and verifies the requested folder is a descendant of the shared root.
+- The walk is capped at **64 levels** to prevent runaway recursion on deep trees.
+- If the requested `folder` UUID is not part of the shared tree, the server returns `404 Not Found`.
+- Files returned by `GET /s/{slug}/file/{fileID}` are verified to belong to the shared tree before a presigned download URL is issued.

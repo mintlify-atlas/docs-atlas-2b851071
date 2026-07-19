@@ -1,0 +1,302 @@
+---
+title: "REST API Endpoints for Files"
+sidebarTitle: "Files"
+description: "Complete reference for Vaulx file endpoints: list, search, rename, move, delete, and preview files with per-role and per-file access control."
+---
+
+The file endpoints are the heart of Vaulx's browser-based interface. They serve full HTML pages for direct navigation and lightweight HTMX partials for in-page updates — the same routes handle both, determined by the presence of the `HX-Request: true` request header. All endpoints require an active session cookie; unauthenticated requests are rejected with `401 Unauthorized`.
+
+---
+
+## List root files
+
+<ParamField query="page" type="integer" default="1">
+  Page number. Must be a positive integer.
+</ParamField>
+
+<ParamField query="limit" type="integer" default="48">
+  Number of files per page. Maximum value is `100`.
+</ParamField>
+
+```http
+GET /files
+```
+
+Returns the root-level file browser. Admins see all root folders and files paginated; non-admin users see only folders they own and files they uploaded or have an explicit permission grant on.
+
+**Authentication:** Required (any role)
+
+**Success response:** `200 OK` — full HTML page (`FilesPage`) or an HTMX content partial (`FileBrowserContent`) when `HX-Request: true` is present. Pagination controls are rendered only for admin users.
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `401 Unauthorized` | No active session. |
+| `500 Internal Server Error` | Database query failure. |
+
+---
+
+## List folder contents
+
+```http
+GET /files/{folderID}
+```
+
+Returns the contents of a specific folder. Admins see all child folders and files with pagination; non-admin users see only items they own or have a permission grant on.
+
+**Authentication:** Required (any role)
+
+<ParamField path="folderID" type="string" required>
+  UUID of the folder to open.
+</ParamField>
+
+<ParamField query="page" type="integer" default="1">
+  Page number. Ignored for non-admin users (all permitted items are returned).
+</ParamField>
+
+<ParamField query="limit" type="integer" default="48">
+  Items per page (admin only). Maximum `100`.
+</ParamField>
+
+**Success response:** `200 OK` — HTML page with the folder's contents and a breadcrumb trail.
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `400 Bad Request` | `folderID` is not a valid UUID. |
+| `403 Forbidden` | Authenticated user has no access to this folder. |
+| `404 Not Found` | No folder with that ID exists. |
+| `500 Internal Server Error` | Database query failure. |
+
+<Note>
+  Access is evaluated first against folder ownership (`owner_id`). If the user is neither the owner nor an admin, the server checks the `permissions` table for an explicit grant on this folder resource before returning `403`.
+</Note>
+
+---
+
+## Search files and folders
+
+```http
+GET /files/search?q={term}
+```
+
+Performs a case-insensitive `ILIKE` search across all active file names (up to 100 results) and folder names (up to 50 results). When `q` is empty or whitespace-only the request falls back to the standard root listing.
+
+**Authentication:** Required (any role)
+
+<ParamField query="q" type="string" required>
+  Search term. Matched with `ILIKE '%term%'` against `files.name` and `folders.name`.
+</ParamField>
+
+**Success response:** `200 OK`
+
+- When `HX-Request: true` — returns a `SearchResults` HTML partial suitable for HTMX swap.
+- Otherwise — returns a full `SearchPage` HTML document.
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `401 Unauthorized` | No active session. |
+| `500 Internal Server Error` | Search query failure. |
+
+<Tip>
+  Drive the search box from an HTMX input with `hx-get="/files/search"` and `hx-trigger="input changed delay:300ms"`. The server detects `HX-Request: true` and returns only the results partial, keeping the surrounding page intact.
+</Tip>
+
+---
+
+## Delete a file
+
+```http
+DELETE /files/{fileID}
+```
+
+Deletes a file. By default this is a **soft delete** — the file's `status` column is set to `'deleted'` and it moves to the trash. Passing `permanent=true` performs a **hard delete**: the S3 object is removed first, then the database row is deleted entirely. Hard delete is restricted to admins.
+
+**Authentication:** Required (editor role; admin for hard delete)
+
+<ParamField path="fileID" type="string" required>
+  UUID of the file to delete.
+</ParamField>
+
+<ParamField query="permanent" type="boolean" default="false">
+  Set to `true` to permanently remove the S3 object and the database row. Admin only.
+</ParamField>
+
+**Success response:** `200 OK` with an `HX-Trigger` header:
+
+```json
+// soft delete
+{"showToast": {"message": "File deleted", "type": "success"}}
+
+// hard delete
+{"showToast": {"message": "File permanently deleted", "type": "success"}}
+```
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `400 Bad Request` | `fileID` is not a valid UUID. |
+| `401 Unauthorized` | No active session. |
+| `403 Forbidden` | User is not an editor, or is an editor but did not upload this file, or `permanent=true` was used by a non-admin. |
+| `404 Not Found` | No file with that ID exists. |
+| `500 Internal Server Error` | Database or S3 operation failed. |
+
+<Warning>
+  A hard delete (`permanent=true`) cannot be undone. The S3 object is removed before the database row is deleted. If the S3 deletion fails (e.g., the object is already gone), the database row is still removed.
+</Warning>
+
+---
+
+## Rename a file
+
+```http
+PATCH /files/{fileID}/name
+```
+
+Updates the display name of an active file. The new name is validated to be non-empty. Returns the refreshed `FileCard` HTML partial so HTMX can swap it in place.
+
+**Authentication:** Required (editor who uploaded the file, or admin)
+
+<ParamField path="fileID" type="string" required>
+  UUID of the file to rename.
+</ParamField>
+
+**Request body** (`application/x-www-form-urlencoded`):
+
+<ParamField body="name" type="string" required>
+  The new display name for the file. Cannot be empty.
+</ParamField>
+
+**Success response:** `200 OK` — `FileCard` HTML partial with `HX-Trigger`:
+
+```json
+{"showToast": {"message": "File renamed", "type": "success"}}
+```
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `400 Bad Request` | `fileID` invalid, form parse error, or `name` is empty. |
+| `401 Unauthorized` | No active session. |
+| `403 Forbidden` | User is not an editor, or did not upload this file and is not an admin. |
+| `404 Not Found` | No active file with that ID. |
+| `500 Internal Server Error` | Database update failed. |
+
+---
+
+## Move a file to a folder
+
+```http
+PATCH /files/{fileID}/folder
+```
+
+Moves an active file to a different folder. Send an empty `folderId` string to move the file to the root level. Returns the refreshed `FileCard` HTML partial.
+
+**Authentication:** Required (editor+)
+
+<ParamField path="fileID" type="string" required>
+  UUID of the file to move.
+</ParamField>
+
+**Request body** (`application/json`):
+
+<ParamField body="folderId" type="string" required>
+  UUID of the destination folder. Pass an empty string `""` to move the file to the root (no folder).
+</ParamField>
+
+```json
+// Move into a folder
+{"folderId": "018e2c1a-dead-beef-a0b0-123456789abc"}
+
+// Move to root
+{"folderId": ""}
+```
+
+**Success response:** `200 OK` — updated `FileCard` HTML partial with `HX-Trigger`:
+
+```json
+{"showToast": {"message": "File moved", "type": "success"}}
+```
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `400 Bad Request` | `fileID` or `folderId` is not a valid UUID, or the JSON body cannot be decoded. |
+| `403 Forbidden` | No active session or user is not at least an editor. |
+| `500 Internal Server Error` | Database update failed. |
+
+---
+
+## Preview a file
+
+```http
+GET /api/file/{fileID}/preview
+```
+
+Generates a 5-minute presigned S3 GET URL for the file and returns a `PreviewPanel` HTML partial. Intended for HTMX-driven side-panel previews in the file browser. Only files with `status = 'active'` are previewable.
+
+**Authentication:** Required (any role)
+
+<ParamField path="fileID" type="string" required>
+  UUID of the file to preview.
+</ParamField>
+
+**Success response:** `200 OK` — `PreviewPanel` HTML partial containing the presigned URL and file metadata.
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `400 Bad Request` | `fileID` is not a valid UUID. |
+| `401 Unauthorized` | No active session. |
+| `403 Forbidden` | User is not the uploader, not an admin, and has no permission grant on this file. |
+| `404 Not Found` | File does not exist or `status != 'active'`. |
+| `500 Internal Server Error` | Presigned URL generation failed. |
+
+<Note>
+  The presigned URL embedded in the `PreviewPanel` is valid for **5 minutes** (generated via `storage.PresignGETWithTTL`). It is intended for in-browser inline preview only. For a direct force-download, use the [download endpoint](/api/download) instead.
+</Note>
+
+---
+
+## List all folders (JSON)
+
+```http
+GET /api/folders
+```
+
+Returns a flat JSON array of every folder in the system, used to populate the move-to-folder picker in the file browser UI.
+
+**Authentication:** Required (any role)
+
+**Success response:** `200 OK` — `application/json`
+
+<ResponseField name="id" type="string">
+  Folder UUID.
+</ResponseField>
+
+<ResponseField name="name" type="string">
+  Folder display name.
+</ResponseField>
+
+```json
+[
+  {"id": "018e2c1a-dead-beef-a0b0-000000000001", "name": "Marketing"},
+  {"id": "018e2c1a-dead-beef-a0b0-000000000002", "name": "Engineering"},
+  {"id": "018e2c1a-dead-beef-a0b0-000000000003", "name": "Design Assets"}
+]
+```
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `401 Unauthorized` | No active session. |
+| `500 Internal Server Error` | Database query failed. |

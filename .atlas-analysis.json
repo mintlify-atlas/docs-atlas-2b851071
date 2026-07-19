@@ -1,0 +1,127 @@
+{
+  "projectType": "saas",
+  "projectName": "Vaulx",
+  "projectDescription": "A self-hosted, private file asset platform built in Go that lets teams upload, organise, and share files with role-based access control, public share links, and a complete audit trail.",
+  "theme": "luma",
+  "primaryColor": "#4F46E5",
+  "lightColor": "#EEF2FF",
+  "darkColor": "#1E1B4B",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "deployment"
+            ]
+          },
+          {
+            "group": "Core Features",
+            "pages": [
+              "features/files-and-folders",
+              "features/uploading",
+              "features/sharing",
+              "features/search-and-preview"
+            ]
+          },
+          {
+            "group": "Access Control",
+            "pages": [
+              "access-control/roles",
+              "access-control/permissions",
+              "access-control/audit-log"
+            ]
+          },
+          {
+            "group": "Administration",
+            "pages": [
+              "administration/user-management",
+              "administration/trash",
+              "administration/configuration"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "api/overview",
+              "api/authentication"
+            ]
+          },
+          {
+            "group": "Files & Folders",
+            "pages": [
+              "api/files",
+              "api/folders",
+              "api/download"
+            ]
+          },
+          {
+            "group": "Upload",
+            "pages": [
+              "api/upload",
+              "api/multipart-upload"
+            ]
+          },
+          {
+            "group": "Shares & Permissions",
+            "pages": [
+              "api/shares",
+              "api/permissions"
+            ]
+          },
+          {
+            "group": "Admin",
+            "pages": [
+              "api/admin-users",
+              "api/admin-audit",
+              "api/zip"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Presigned S3/Hetzner Object Storage uploads via PUT — no file data passes through the server",
+    "Multipart upload support for large files (via AWS SDK multipart API)",
+    "Folder hierarchy with breadcrumb navigation and nested folder trees",
+    "Three-tier RBAC: admin, editor, viewer with per-resource permission grants",
+    "Public share links with 7-day expiry and view-count tracking for files and folders",
+    "Folder ZIP download — streaming on-the-fly or async background job for large trees",
+    "Full audit trail — every login, upload, delete, rename, and share action is logged",
+    "Admin panel: user management, audit log with action filtering, trash/restore, permission grants",
+    "Server-side rendered UI with HTMX + Alpine.js — zero JS build step",
+    "Single Docker image with embedded migrations and automatic admin seeding on first boot"
+  ],
+  "publicApiSurface": [
+    "GET /auth/login, POST /auth/login, POST /auth/logout",
+    "GET /files, GET /files/{folderID}",
+    "POST /files/folders, DELETE /files/folders/{folderID}, PATCH /files/folders/{folderID}",
+    "POST /files/folders/{folderID}/share",
+    "GET /files/search?q=",
+    "GET /files/{fileID}/download",
+    "DELETE /files/{fileID}, PATCH /files/{fileID}/name, PATCH /files/{fileID}/folder",
+    "POST /files/{fileID}/share",
+    "GET /shares, DELETE /shares/{shareID}",
+    "GET /s/{slug}, GET /s/{slug}/download, GET /s/{slug}/file/{fileID}",
+    "GET /s/{slug}/zip, POST /s/{slug}/zip/prepare, GET /s/{slug}/zip/status",
+    "POST /api/upload/init, POST /api/upload/confirm/{fileID}",
+    "GET /api/file/{fileID}/preview",
+    "GET /api/folders",
+    "POST /api/s3/multipart, GET /api/s3/multipart/{uploadId}, GET /api/s3/multipart/{uploadId}/{partNumber}, DELETE /api/s3/multipart/{uploadId}, POST /api/s3/multipart/{uploadId}/complete",
+    "GET /files/{folderID}/zip, POST /files/{folderID}/zip/prepare, GET /files/{folderID}/zip/status",
+    "GET /admin/users, POST /admin/users, PATCH /admin/users/{userID}",
+    "GET /admin/audit, GET /admin/trash, POST /admin/trash/{fileID}/restore",
+    "GET /admin/permissions, POST /admin/permissions, DELETE /admin/permissions/{permID}",
+    "GET /profile, POST /profile, POST /profile/password"
+  ]
+}

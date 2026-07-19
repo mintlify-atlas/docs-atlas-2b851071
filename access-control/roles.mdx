@@ -1,0 +1,117 @@
+---
+title: "Roles and Access Levels in Vaulx"
+sidebarTitle: "Roles"
+description: "Vaulx ships with three fixed roles — admin, editor, and viewer — each granting a distinct scope of capabilities across files, folders, and users."
+---
+
+Vaulx uses role-based access control (RBAC) with three built-in roles: `admin`, `editor`, and `viewer`. Roles are global — they apply across the entire instance — and there are no custom or per-resource roles. Every user is assigned exactly one role at account creation, and only an admin can change it. The role is stored alongside the user's session and evaluated on every request by the `RequireAuth` middleware before any handler logic runs.
+
+## Role Summary
+
+| Role | Description | Key Capabilities |
+|------|-------------|-----------------|
+| `admin` | Full system control | Manage users, hard-delete files, grant/revoke permissions, view audit log, restore trash |
+| `editor` | Content author | Upload files, create and manage their own folders, create share links |
+| `viewer` | Read-only consumer | Browse and download files and folders they have been granted access to |
+
+## Detailed Role Breakdown
+
+<AccordionGroup>
+  <Accordion title="admin — Full System Control">
+    Admins bypass all ownership checks. The `CanAccess` function in `acl.go` returns `true` immediately for any user whose role is `admin`, regardless of who owns the resource. Admins can do everything editors and viewers can do, plus:
+
+    - **User management** — Create users (`POST /admin/users`), update their role or active status (`PATCH /admin/users/{userID}`), and list all users (`GET /admin/users`).
+    - **Hard-delete files** — Permanently remove a file by appending `?permanent=true` to the delete endpoint: `DELETE /files/{fileID}?permanent=true`. Non-admin users who attempt a permanent delete receive `403 Forbidden`.
+    - **Grant and revoke permissions** — Assign per-resource access to any user via `POST /admin/permissions`, and remove it via `DELETE /admin/permissions/{permID}`.
+    - **Audit log** — View the full instance-wide audit trail at `GET /admin/audit`, with optional action filtering and pagination.
+    - **Trash management** — View all soft-deleted files at `GET /admin/trash` and restore individual files via `POST /admin/trash/{fileID}/restore`.
+  </Accordion>
+
+  <Accordion title="editor — Content Author">
+    Editors can create and manage their own content. The `CanEdit` function returns `true` for any user with the `editor` or `admin` role.
+
+    - **Upload files** — Editors pass the `CanEdit` check and can upload files to any folder they own.
+    - **Folder management** — Create new folders, rename folders they own, and delete folders they own.
+    - **File management** — Rename their own files and soft-delete them (`DELETE /files/{fileID}` without `?permanent=true`). Soft-deleted files move to trash and are recoverable by an admin.
+    - **Share links** — Create public or private share links for their own files via `POST /files/{id}/share`.
+
+    Editors **cannot** hard-delete files, access the admin panel, manage users, view the audit log, or act on resources owned by other users (unless explicitly granted a permission by an admin).
+  </Accordion>
+
+  <Accordion title="viewer — Read-Only Consumer">
+    Viewers have the most restricted role. They cannot upload files, create folders, or generate share links.
+
+    - **Browse** — View files and folders they have been explicitly granted access to by an admin via a permission entry.
+    - **Download** — Download individual files or folder ZIP archives for resources they can access.
+
+    By default, a viewer can access **nothing** until an admin grants them a per-resource permission. The access check flow for viewers goes through `CheckPermission(userID, resourceType, resourceID)`, which queries the `permissions` table for a matching row. If no permission row exists, the request is denied. See [Permissions](/access-control/permissions) for how to grant access.
+  </Accordion>
+</AccordionGroup>
+
+## Access Check Logic
+
+Vaulx evaluates access through two functions defined in `internal/auth/acl.go`:
+
+```go
+// CanAccess reports whether user may access a resource owned by ownerID.
+// Phase 1 stub: admin bypasses all checks; others require ownership.
+func CanAccess(user UserContext, ownerID string) bool {
+    if user.Role == "admin" {
+        return true
+    }
+    return user.ID == ownerID
+}
+
+// CanEdit reports whether the user may create or modify resources.
+func CanEdit(user UserContext) bool {
+    return user.Role == "admin" || user.Role == "editor"
+}
+```
+
+For non-admin, non-owner access, handlers call `CheckPermission` against the `permissions` table. This lets a viewer (or any non-owner) access a specific file or folder without changing their global role. See [Per-Resource Permissions](/access-control/permissions) for full details.
+
+## Assigning and Changing Roles
+
+Roles are managed exclusively by admins via the admin panel routes.
+
+<Steps>
+  <Step title="Create a user with a role">
+    Submit a `POST /admin/users` form with the following fields:
+
+    | Field | Value |
+    |-------|-------|
+    | `email` | User's email address (must be unique) |
+    | `name` | Display name |
+    | `role` | `viewer`, `editor`, or `admin` |
+    | `password` | Initial password (bcrypt-hashed before storage) |
+
+    On success, the server redirects to `GET /admin/users`.
+  </Step>
+
+  <Step title="Change an existing user's role">
+    Send a `PATCH /admin/users/{userID}` request with the `role` form field set to the new value (`viewer`, `editor`, or `admin`). Any value outside these three returns `400 Bad Request`.
+
+    ```bash
+    curl -X PATCH https://your-vaulx-instance/admin/users/<userID> \
+      -d "role=editor" \
+      --cookie "vaulx-session=<admin-session>"
+    ```
+  </Step>
+</Steps>
+
+## Session Storage
+
+Once a user authenticates, Vaulx stores the following values in the `vaulx-session` cookie via the `gorilla/sessions` session store:
+
+| Key | Description |
+|-----|-------------|
+| `user_id` | The user's UUID |
+| `email` | The user's email address |
+| `name` | The user's display name |
+| `role` | The user's current role string (`admin`, `editor`, or `viewer`) |
+
+The `RequireAuth` middleware reads all four values on every request. If any of `user_id` or `role` are missing or empty, the request is redirected to `/auth/login`.
+
+<Note>
+  **Deactivating users:** An admin can disable a user's ability to log in without deleting their account. Send `PATCH /admin/users/{userID}` with `active=false`. The user record is preserved — including their files, folders, and permission entries — but they will be unable to authenticate. To re-enable access, send `active=true` to the same endpoint. Active-only users are shown in the permission grant dropdown (the `List` handler filters out inactive users before rendering the page).
+</Note>

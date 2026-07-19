@@ -1,0 +1,160 @@
+---
+title: "Managing Users in Vaulx"
+sidebarTitle: "User Management"
+description: "Create, update, and deactivate user accounts and manage roles from the admin-only user panel in Vaulx."
+---
+
+Vaulx uses a built-in user system backed by PostgreSQL. Admins can create and manage accounts directly from the `/admin/users` panel, assigning one of three roles to each user. On first boot, the server automatically seeds a single admin account from environment variables so there is always a way in. Every user action that modifies an account — including role changes, deactivations, and password updates — is recorded in the audit log.
+
+## User model
+
+Each user is stored in the `users` table. The schema is defined in `migrations/001_initial.up.sql`:
+
+```sql
+CREATE TABLE users (
+  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  email         TEXT UNIQUE NOT NULL,
+  name          TEXT NOT NULL,
+  role          TEXT NOT NULL CHECK (role IN ('admin', 'editor', 'viewer')),
+  password_hash TEXT NOT NULL,
+  active        BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | UUID | Auto-generated primary key |
+| `email` | TEXT | Unique — login identifier |
+| `name` | TEXT | Display name shown in the sidebar |
+| `role` | TEXT | One of `admin`, `editor`, or `viewer` |
+| `password_hash` | TEXT | bcrypt hash at `DefaultCost` |
+| `active` | BOOLEAN | `true` by default; set `false` to block login |
+| `created_at` | TIMESTAMPTZ | Set automatically on insert |
+
+## Admin seeding on first boot
+
+When the server starts and the `users` table is empty, `seed.AdminUser` is called automatically. It reads `SEED_ADMIN_EMAIL` and `SEED_ADMIN_PASSWORD` from the environment and creates a single admin account with the name `"Admin"`. If either variable is missing, seeding is skipped with a log warning. On subsequent starts the seed is a no-op — it only runs when `COUNT(*) = 0`.
+
+```env
+SEED_ADMIN_EMAIL=admin@yourdomain.com
+SEED_ADMIN_PASSWORD=Ch4ngeMe99
+```
+
+<Note>
+  `SEED_ADMIN_PASSWORD` must be at least 8 characters and contain at least one digit. Change this value before exposing Vaulx publicly.
+</Note>
+
+## Creating a user (admin only)
+
+<Steps>
+  <Step title="Open the admin panel">
+    Navigate to `/admin/users`. Only users with `role = 'admin'` can access this page; all others receive a `403 Access denied` response.
+  </Step>
+  <Step title="Submit the create-user form">
+    Fill in all required fields and submit to `POST /admin/users`. On success the server redirects back to `/admin/users`. If the email is already in use you receive a `409 Conflict` response.
+  </Step>
+</Steps>
+
+**Route:** `POST /admin/users`
+
+<ParamField body="email" type="string" required>
+  The user's email address. Must be unique across all accounts.
+</ParamField>
+
+<ParamField body="name" type="string" required>
+  The user's display name shown in the UI.
+</ParamField>
+
+<ParamField body="role" type="string" required>
+  One of `viewer`, `editor`, or `admin`.
+
+  | Role | Can do |
+  |---|---|
+  | `viewer` | Browse and download files they have access to |
+  | `editor` | Upload files, create/rename/soft-delete their own files and folders, create share links |
+  | `admin` | Everything — manage users, hard-delete files, grant permissions, view audit log |
+</ParamField>
+
+<ParamField body="password" type="string" required>
+  Plain-text password hashed with bcrypt `DefaultCost` before storage. Minimum 8 characters recommended.
+</ParamField>
+
+## Listing users
+
+**Route:** `GET /admin/users`
+
+Admin-only. Returns an HTML page showing every account in the system ordered by `created_at DESC`, including each user's email, display name, role, and active status. Non-admin requests receive `403`.
+
+## Updating a user
+
+**Route:** `PATCH /admin/users/{userID}`
+
+Admins can update a user's role, their active status, or both in a single request. Supply only the fields you want to change; omitted fields are left untouched. On success the response includes an `HX-Trigger` header that fires a `showToast` event with the message `"User updated"`.
+
+<ParamField body="role" type="string">
+  New role for the user. Must be one of `viewer`, `editor`, or `admin`. Omit to leave the current role unchanged.
+</ParamField>
+
+<ParamField body="active" type="string">
+  Pass `"true"` to re-enable a deactivated account or `"false"` to deactivate an active one. Omit to leave active status unchanged.
+</ParamField>
+
+## Deactivating a user
+
+Setting `active=false` via `PATCH /admin/users/{userID}` immediately blocks the user from logging in. The `GetUserByEmail` query enforces `active = true` at the database level:
+
+```sql
+-- name: GetUserByEmail :one
+SELECT * FROM users
+WHERE email = $1 AND active = true
+LIMIT 1;
+```
+
+Any subsequent login attempt with a deactivated account will fail at the authentication query even if the password is correct. Existing sessions are not automatically invalidated, but deactivated users cannot initiate any new session.
+
+<Warning>
+  Deactivating an admin account while it is the only admin will lock you out of the admin panel. Always ensure at least one other active admin account exists before deactivating an admin.
+</Warning>
+
+## Profile self-service
+
+Any authenticated user can view and update their own profile without admin involvement.
+
+<Tabs>
+  <Tab title="View profile">
+    **Route:** `GET /profile`
+
+    Renders the profile page showing the current user's name, email, and role. Accepts an optional `?success=name` or `?success=password` query parameter to display a confirmation message after a successful update.
+  </Tab>
+  <Tab title="Update display name">
+    **Route:** `POST /profile`
+
+    Updates the authenticated user's display name.
+
+    <ParamField body="name" type="string" required>
+      New display name. Must be non-empty and at most 100 characters. After a successful save the session is refreshed so the new name appears in the sidebar immediately without requiring a re-login.
+    </ParamField>
+  </Tab>
+  <Tab title="Change password">
+    **Route:** `POST /profile/password`
+
+    Changes the authenticated user's password. Deactivated users receive `403 Forbidden` rather than a misleading "incorrect password" error.
+
+    <ParamField body="current_password" type="string" required>
+      The user's current password, verified against the stored bcrypt hash before any change is made.
+    </ParamField>
+
+    <ParamField body="new_password" type="string" required>
+      The desired new password. Must be at least 8 characters.
+    </ParamField>
+
+    <ParamField body="confirm_password" type="string" required>
+      Must exactly match `new_password`. The server returns `400 Bad Request` if the two values differ.
+    </ParamField>
+  </Tab>
+</Tabs>
+
+<Note>
+  All passwords are hashed with `bcrypt.GenerateFromPassword` at `bcrypt.DefaultCost` before being written to the database. Plain-text passwords are never stored. The session cookie is refreshed after a successful name change so the sidebar reflects the update without a re-login.
+</Note>

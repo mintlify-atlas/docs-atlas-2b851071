@@ -1,0 +1,100 @@
+---
+title: "File Download Endpoints in Vaulx"
+sidebarTitle: "Download"
+description: "Reference for Vaulx's authenticated download endpoint and how presigned S3 URLs keep file bytes off the application server entirely."
+---
+
+Vaulx never proxies file bytes through the application server for downloads. When a download is requested, the server validates the session and access rights, then calls `storage.PresignGET` to obtain a time-limited AWS S3 presigned GET URL and immediately issues a `302 Found` redirect. The browser follows the redirect and fetches the file bytes directly from S3 — the Go server is completely out of the data path after that point. This keeps bandwidth consumption on the application server near zero regardless of file size.
+
+---
+
+## Download a file
+
+```http
+GET /files/{fileID}/download
+```
+
+Validates the caller's session and access rights, generates a 15-minute presigned S3 GET URL for the file, and returns a `302 Found` redirect to that URL. The browser follows the redirect and downloads the file directly from S3.
+
+**Authentication:** Required (file uploader, admin, or any user with an explicit permission grant on this file)
+
+<ParamField path="fileID" type="string" required>
+  UUID of the file to download. The file must exist and have `status = 'active'`.
+</ParamField>
+
+**Success response:** `302 Found` — `Location` header set to the presigned S3 URL. The browser fetches the file directly from S3 without any further involvement from the Vaulx server.
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `400 Bad Request` | `fileID` is not a valid UUID. |
+| `401 Unauthorized` | No active session cookie. |
+| `403 Forbidden` | Authenticated user is not the uploader, not an admin, and has no permission grant on this file. |
+| `404 Not Found` | No file with that ID exists, or the file's `status` is not `active` (e.g., it is `pending` or `deleted`). |
+| `500 Internal Server Error` | Presigned URL generation failed (S3 client not initialised or AWS error). |
+
+---
+
+## Example: downloading with curl
+
+Because the server returns a redirect, pass `-L` to make curl follow it automatically.
+
+```bash
+# Download a file — curl follows the 302 to the presigned S3 URL
+curl -b cookies.txt -L \
+  http://localhost:8080/files/018e2c1a-dead-beef-a0b0-123456789abc/download \
+  -o report.pdf
+```
+
+To inspect the redirect without following it, omit `-L` and check the `Location` header:
+
+```bash
+# Inspect the presigned URL without downloading
+curl -b cookies.txt -I \
+  http://localhost:8080/files/018e2c1a-dead-beef-a0b0-123456789abc/download
+# HTTP/1.1 302 Found
+# Location: https://s3.eu-central-1.amazonaws.com/vaulx-bucket/uploads/018e2c...?X-Amz-Signature=...
+```
+
+---
+
+## How presigned URLs work
+
+When the download endpoint is hit, the handler calls `storage.PresignGET(ctx, file.S3Key)`. This function calls the AWS SDK's `PresignGetObject` with a **15-minute expiry**:
+
+```go
+// internal/storage/presign.go
+func PresignGET(ctx context.Context, key string) (string, error) {
+    req, err := PresignClient.PresignGetObject(ctx, &s3.GetObjectInput{
+        Bucket: aws.String(Bucket),
+        Key:    aws.String(key),
+    }, s3.WithPresignExpires(15*time.Minute))
+    // ...
+    return req.URL, nil
+}
+```
+
+The resulting URL encodes the bucket, key, expiry, and a cryptographic signature (HMAC-SHA256 in AWS Signature Version 4). S3 validates the signature and the expiry on every request — no Vaulx server involvement is required once the URL is issued.
+
+<Note>
+  The 15-minute TTL is fixed for the download endpoint. If you need a shorter-lived URL (e.g., for an inline browser preview), use the [preview endpoint](/api/files#preview-a-file) instead, which generates a 5-minute presigned URL via `storage.PresignGETWithTTL`.
+</Note>
+
+---
+
+## Preview vs. download
+
+Both endpoints generate presigned S3 GET URLs, but they serve different purposes:
+
+| | Preview (`GET /api/file/{fileID}/preview`) | Download (`GET /files/{fileID}/download`) |
+|---|---|---|
+| **TTL** | 5 minutes | 15 minutes |
+| **Response** | HTML partial (`PreviewPanel`) embedding the URL | `302` redirect directly to the URL |
+| **Use case** | In-browser inline preview panel | Force-download to disk |
+| **S3 function** | `storage.PresignGETWithTTL(ctx, key, 5*time.Minute)` | `storage.PresignGET(ctx, key)` |
+| **Content-Disposition** | Inline (browser decides) | Not set (S3 default) |
+
+<Tip>
+  For images, the file browser generates an additional short-lived presigned URL at list time to render thumbnail previews. These thumbnails use the same `storage.PresignGET` function and are cached client-side by the browser for the duration of the page session.
+</Tip>

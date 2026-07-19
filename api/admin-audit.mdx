@@ -1,0 +1,158 @@
+---
+title: "Audit Log API Endpoints"
+sidebarTitle: "Audit Log"
+description: "Admin-only audit log endpoints with pagination and action-based filtering, plus trash management to list, inspect, and restore soft-deleted files."
+---
+
+Vaulx records every significant user action in an append-only `audit_log` table. Each entry captures the acting user, the action name, the affected resource type and ID, an optional JSONB metadata blob, and a creation timestamp. The admin audit page exposes this log with two query modes: paginated browsing (50 entries per page) and action-filtered search (up to 100 entries). Soft-deleted files are managed through the separate `/admin/trash` endpoints, which also write to the audit log on restore.
+
+All endpoints in this group require the `admin` role. Non-admin requests receive a **403** HTML error page.
+
+---
+
+## Paginated audit log
+
+**`GET /admin/audit`**
+
+Renders the HTML admin audit page. Without an `action` filter, results are paginated at 50 entries per page and include a total count for pagination controls. With an `action` filter, returns up to 100 matching entries without pagination.
+
+**Authentication:** admin only.
+
+<ParamField query="page" type="integer">
+  Page number for paginated browsing. Defaults to `1`. Ignored when `action` is supplied.
+</ParamField>
+
+<ParamField query="action" type="string">
+  Filter results to a single action name (e.g. `file.upload`, `share.revoke`). When present, returns up to 100 entries and disables pagination. See the full action reference table below for valid values.
+</ParamField>
+
+**Example requests**
+
+```http
+GET /admin/audit
+GET /admin/audit?page=3
+GET /admin/audit?action=file.delete
+GET /admin/audit?action=auth.login
+```
+
+**Response fields per audit log entry**
+
+<ResponseField name="id" type="uuid">
+  Unique audit log entry identifier.
+</ResponseField>
+
+<ResponseField name="action" type="string">
+  The action name, e.g. `file.upload` or `share.revoke`.
+</ResponseField>
+
+<ResponseField name="resource_type" type="string">
+  Type of resource affected: `file`, `folder`, or `share`. Null for actions with no associated resource (e.g. `auth.login`).
+</ResponseField>
+
+<ResponseField name="resource_id" type="uuid">
+  UUID of the affected resource. Null when `resource_type` is null.
+</ResponseField>
+
+<ResponseField name="created_at" type="string">
+  Timestamp of when the action was recorded.
+</ResponseField>
+
+<ResponseField name="actor_name" type="string">
+  Display name of the user who performed the action.
+</ResponseField>
+
+<ResponseField name="actor_email" type="string">
+  Email address of the user who performed the action.
+</ResponseField>
+
+---
+
+## Soft-deleted files (trash)
+
+**`GET /admin/trash`**
+
+Renders the HTML admin trash page listing all files with `status = 'deleted'`. Files reach the trash via soft deletion — the row is retained in the `files` table but excluded from all normal file listings until restored or hard-deleted.
+
+**Authentication:** admin only.
+
+**Response fields per trash item**
+
+<ResponseField name="id" type="uuid">
+  File UUID, used as `fileID` in the restore endpoint.
+</ResponseField>
+
+<ResponseField name="name" type="string">
+  Original filename at the time of deletion.
+</ResponseField>
+
+<ResponseField name="size_human" type="string">
+  Human-readable file size (e.g. `4.2 MB`).
+</ResponseField>
+
+<ResponseField name="uploader_name" type="string">
+  Display name of the user who originally uploaded the file.
+</ResponseField>
+
+<ResponseField name="date" type="string">
+  Human-readable upload date (e.g. `Jan 2, 2006`).
+</ResponseField>
+
+---
+
+## Restore file from trash
+
+**`POST /admin/trash/{fileID}/restore`**
+
+Restores a soft-deleted file by setting its `status` back to `active`. The file immediately reappears in folder listings and becomes accessible for download.
+
+**Authentication:** admin only.
+
+<ParamField path="fileID" type="uuid" required>
+  The UUID of the deleted file to restore.
+</ParamField>
+
+**Response**
+
+- **200 OK** with `HX-Trigger` header: `{"showToast":{"message":"File restored","type":"success"}}`.
+- **404 Not Found** if no file with that UUID exists in the database.
+- **400 Bad Request** if `fileID` is not a valid UUID.
+- Writes a `file.restore` entry to the audit log.
+
+---
+
+## Audit log entry model
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | UUID | Primary key |
+| `user_id` | UUID \| null | FK → users.id; null if the actor's account was deleted |
+| `action` | text | Action name (see table below) |
+| `resource_type` | text \| null | `file`, `folder`, or `share` |
+| `resource_id` | UUID \| null | UUID of the affected resource |
+| `meta` | JSONB \| null | Optional structured metadata for the action |
+| `created_at` | timestamptz | When the action was recorded |
+
+---
+
+## Action reference
+
+| Action | Resource Type | Description |
+|---|---|---|
+| `auth.login` | — | User successfully authenticated |
+| `file.upload` | `file` | File upload confirmed and status set to `active` |
+| `file.delete` | `file` | File soft-deleted (moved to trash) |
+| `file.hard_delete` | `file` | File permanently deleted by an admin |
+| `file.rename` | `file` | File renamed |
+| `file.move` | `file` | File moved to a different folder |
+| `file.restore` | `file` | File restored from trash by an admin |
+| `folder.create` | `folder` | New folder created |
+| `folder.delete` | `folder` | Folder deleted |
+| `folder.rename` | `folder` | Folder renamed |
+| `folder.zip_download` | `folder` | Folder downloaded as a ZIP archive |
+| `share.revoke` | `share` | Share link revoked |
+| `profile.name_updated` | — | User updated their display name |
+| `profile.password_updated` | — | User changed their password |
+
+<Tip>
+  Use the `action` query parameter on `GET /admin/audit` to quickly drill into any single action type, for example `?action=file.hard_delete` or `?action=auth.login`.
+</Tip>

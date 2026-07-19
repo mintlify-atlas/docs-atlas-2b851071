@@ -1,0 +1,135 @@
+---
+title: "Granting Per-Resource Permissions in Vaulx"
+sidebarTitle: "Permissions"
+description: "Grant and revoke view, edit, or manage access to specific files or folders for any user, without changing their global role across the instance."
+---
+
+Per-resource permissions let an admin give any user — most commonly a `viewer` — access to a specific file or folder without promoting their global role. A viewer with no permissions can see nothing; once an admin grants them `view` access to a folder, they can browse and download from that folder alone. This model keeps global roles coarse-grained while allowing fine-grained sharing within a private Vaulx instance.
+
+## Permission Levels
+
+Each permission row carries one of three levels, enforced in the database with a `CHECK` constraint:
+
+| Level | What it allows |
+|-------|---------------|
+| `view` | Read-only access — browse and download the resource |
+| `edit` | View access plus the ability to upload files and rename content within the resource |
+| `manage` | Edit access plus the ability to delete content and manage shares for the resource |
+
+## Resource Types
+
+Permissions can be scoped to either a **file** (`resource_type = 'file'`) or a **folder** (`resource_type = 'folder'`). Granting access to a folder does not automatically cascade to all files inside it — each resource is checked independently via `CheckPermission`.
+
+## Granting a Permission
+
+Only admins can grant permissions. The form is submitted to `POST /admin/permissions`.
+
+```bash
+curl -X POST https://your-vaulx-instance/admin/permissions \
+  -d "resource_type=folder" \
+  -d "resource_id=<folder-uuid>" \
+  -d "user_id=<grantee-uuid>" \
+  -d "level=view" \
+  --cookie "vaulx-session=<admin-session>"
+```
+
+On success, the handler sets an `HX-Trigger` header with a `showToast` event and redirects to:
+
+```
+GET /admin/permissions?type=<resource_type>&id=<resource_id>
+```
+
+### Form Fields
+
+<ParamField body="resource_type" type="string" required>
+  The type of resource to grant access to. Must be exactly `file` or `folder`.
+</ParamField>
+
+<ParamField body="resource_id" type="string (UUID)" required>
+  The UUID of the file or folder. An invalid UUID returns `400 Bad Request`.
+</ParamField>
+
+<ParamField body="user_id" type="string (UUID)" required>
+  The UUID of the user to receive the permission. Must reference an existing user. An invalid UUID returns `400 Bad Request`.
+</ParamField>
+
+<ParamField body="level" type="string" required>
+  The access level to grant. Must be one of `view`, `edit`, or `manage`. Any other value returns `400 Bad Request`.
+</ParamField>
+
+## Viewing Permissions for a Resource
+
+Admins can inspect which users have been granted access to any file or folder:
+
+```
+GET /admin/permissions?type=file&id={uuid}
+GET /admin/permissions?type=folder&id={uuid}
+```
+
+The page renders a table of grantees showing:
+- Grantee name and email
+- Permission level
+- The date the permission was created
+
+It also renders the grant form pre-filled with the resource type and ID so additional users can be added immediately. Both `type` and `id` query parameters are required; omitting either returns `400 Bad Request`.
+
+## Revoking a Permission
+
+To remove a permission, send a `DELETE` request to the permission's ID:
+
+```
+DELETE /admin/permissions/{permID}
+```
+
+Admin access is required. On success, the handler returns `200 OK` and sets an `HX-Trigger` header with a `showToast` success event. An invalid UUID in `permID` returns `400 Bad Request`; a database error returns `500 Internal Server Error`.
+
+```bash
+curl -X DELETE https://your-vaulx-instance/admin/permissions/<permID> \
+  --cookie "vaulx-session=<admin-session>"
+```
+
+## Database Schema
+
+The `permissions` table is defined in `migrations/001_initial.up.sql`:
+
+```sql
+CREATE TABLE permissions (
+  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id       UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  resource_type TEXT NOT NULL CHECK (resource_type IN ('file', 'folder')),
+  resource_id   UUID NOT NULL,
+  level         TEXT NOT NULL CHECK (level IN ('view', 'edit', 'manage')),
+  granted_by    UUID REFERENCES users(id),
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (user_id, resource_type, resource_id)
+);
+```
+
+Two indexes support fast lookups:
+
+```sql
+CREATE INDEX idx_permissions_resource ON permissions(resource_type, resource_id);
+CREATE INDEX idx_permissions_user_id  ON permissions(user_id);
+```
+
+The `granted_by` column records which admin performed the grant (nullable in case the granting user was subsequently deleted — the `REFERENCES users(id)` has no `ON DELETE` clause, so the row is retained with a null `granted_by`).
+
+## Access Check Flow
+
+When a non-admin, non-owner user attempts to access a file or folder, Vaulx runs the following check (from `internal/db/queries/permissions.sql`):
+
+```sql
+-- name: CheckPermission :one
+SELECT EXISTS(
+  SELECT 1 FROM permissions
+  WHERE user_id       = $1
+    AND resource_type = $2
+    AND resource_id   = $3
+);
+```
+
+If this query returns `false`, the request is denied with `403 Forbidden`. The `CanAccess` function in `acl.go` handles the fast-path for admins and owners first; `CheckPermission` is the fallback for everyone else.
+
+<Note>
+  The `UNIQUE (user_id, resource_type, resource_id)` constraint means a user can hold at most one permission row per resource. However, instead of failing on a duplicate grant, the `GrantPermission` SQL query uses an upsert — `ON CONFLICT ... DO UPDATE SET level = EXCLUDED.level` — so granting a second time on the same resource simply upgrades or downgrades the existing level rather than returning an error. The `granted_by` field is also updated on upsert to reflect who made the most recent change.
+</Note>

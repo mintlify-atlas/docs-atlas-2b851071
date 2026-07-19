@@ -1,0 +1,213 @@
+---
+title: "REST API Endpoints for Folders"
+sidebarTitle: "Folders"
+description: "Complete reference for folder endpoints in Vaulx: create, rename, delete folders, and generate shareable public links with role-based access."
+---
+
+Folders in Vaulx are hierarchical containers that map directly to logical groupings in the file browser. Every folder tracks its owner and, optionally, a parent folder — enabling arbitrarily deep nesting. Deletions cascade automatically through child folders and their files at the database level. All folder endpoints require an active session cookie.
+
+---
+
+## Data models
+
+### File
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | `UUID` | Primary key, auto-generated. |
+| `folder_id` | `UUID \| null` | Parent folder. `null` means root. |
+| `name` | `text` | Display name of the file. |
+| `s3_key` | `text` | Object key in the S3-compatible bucket. |
+| `size_bytes` | `bigint` | File size in bytes. |
+| `mime_type` | `text \| null` | MIME type detected at upload time (e.g., `image/png`). |
+| `uploaded_by` | `UUID` | References `users.id`. |
+| `status` | `text` | Enum: `pending`, `active`, `deleted`. |
+| `created_at` | `timestamptz` | UTC timestamp set on insert. |
+
+### Folder
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | `UUID` | Primary key, auto-generated. |
+| `parent_id` | `UUID \| null` | Parent folder. `null` means root. |
+| `name` | `text` | Display name of the folder. |
+| `owner_id` | `UUID` | References `users.id`. Set to the creating user. |
+| `created_at` | `timestamptz` | UTC timestamp set on insert. |
+
+<Note>
+  The `folders` table uses `ON DELETE CASCADE` on the `parent_id` foreign key. Deleting a folder automatically removes all of its descendant folders and their associated files from the database. Files' S3 objects are **not** cleaned up automatically on a cascade — use the admin trash/hard-delete flow for full cleanup.
+</Note>
+
+---
+
+## Create a folder
+
+```http
+POST /files/folders
+```
+
+Creates a new folder. The authenticated user becomes the folder's `owner_id`. Optionally supply a `parent_id` to nest the folder inside an existing one; omit it to create a root-level folder.
+
+**Authentication:** Required (editor+)
+
+**Request body** (`application/x-www-form-urlencoded`):
+
+<ParamField body="name" type="string" required>
+  Display name of the new folder. Cannot be empty.
+</ParamField>
+
+<ParamField body="parent_id" type="string">
+  UUID of the parent folder. Omit (or leave blank) to create a root-level folder.
+</ParamField>
+
+```bash
+# Create a root-level folder
+curl -b cookies.txt -X POST http://localhost:8080/files/folders \
+  -d "name=Marketing"
+
+# Create a nested folder
+curl -b cookies.txt -X POST http://localhost:8080/files/folders \
+  -d "name=Campaigns" \
+  -d "parent_id=018e2c1a-dead-beef-a0b0-000000000001"
+```
+
+**Success response:** `302 Found` — redirects to `/files/{parent_id}` when `parent_id` was supplied, or `/files` for a root folder. The response also sets:
+
+```
+HX-Trigger: {"showToast": {"message": "Folder created", "type": "success"}}
+```
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `400 Bad Request` | Form parse error or `name` is empty. |
+| `403 Forbidden` | User is not at least an editor. |
+| `500 Internal Server Error` | Database insert failed. |
+
+---
+
+## Delete a folder
+
+```http
+DELETE /files/folders/{folderID}
+```
+
+Permanently deletes a folder and, via the database cascade, all child folders. The S3 objects for any files contained within the deleted tree are **not** removed — use the admin hard-delete flow to clean them up.
+
+**Authentication:** Required (folder owner or admin)
+
+<ParamField path="folderID" type="string" required>
+  UUID of the folder to delete.
+</ParamField>
+
+```bash
+curl -b cookies.txt -X DELETE \
+  http://localhost:8080/files/folders/018e2c1a-dead-beef-a0b0-000000000001
+```
+
+**Success response:** `200 OK` with `HX-Trigger`:
+
+```json
+{"showToast": {"message": "Folder deleted", "type": "success"}}
+```
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `400 Bad Request` | `folderID` is not a valid UUID. |
+| `403 Forbidden` | Authenticated user is neither the folder owner nor an admin. |
+| `404 Not Found` | No folder with that ID exists. |
+| `500 Internal Server Error` | Database deletion failed. |
+
+<Warning>
+  Deletion cascades through all child folders at the database level. This action cannot be undone from the UI. Ensure child folders are intentionally being removed before proceeding.
+</Warning>
+
+---
+
+## Rename a folder
+
+```http
+PATCH /files/folders/{folderID}
+```
+
+Updates the display name of an existing folder. Returns the refreshed `FolderCard` HTML partial for HTMX in-place swap.
+
+**Authentication:** Required (folder owner or admin)
+
+<ParamField path="folderID" type="string" required>
+  UUID of the folder to rename.
+</ParamField>
+
+**Request body** (`application/x-www-form-urlencoded`):
+
+<ParamField body="name" type="string" required>
+  The new display name for the folder. Cannot be empty.
+</ParamField>
+
+```bash
+curl -b cookies.txt -X PATCH \
+  http://localhost:8080/files/folders/018e2c1a-dead-beef-a0b0-000000000001 \
+  -d "name=Brand Assets"
+```
+
+**Success response:** `200 OK` — `FolderCard` HTML partial (includes updated item count) with `HX-Trigger`:
+
+```json
+{"showToast": {"message": "Folder renamed", "type": "success"}}
+```
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `400 Bad Request` | `folderID` invalid, form parse error, or `name` is empty. |
+| `403 Forbidden` | User is neither the folder owner nor an admin. |
+| `404 Not Found` | No folder with that ID exists. |
+| `500 Internal Server Error` | Database update failed. |
+
+---
+
+## Create a folder share link
+
+```http
+POST /files/folders/{folderID}/share
+```
+
+Generates a public, time-limited share link for a folder. The share is valid for **7 days** from creation. If an active share already exists for this folder, its existing slug is returned — no duplicate share records are created.
+
+**Authentication:** Required (editor+)
+
+<ParamField path="folderID" type="string" required>
+  UUID of the folder to share.
+</ParamField>
+
+```bash
+curl -b cookies.txt -X POST \
+  http://localhost:8080/files/folders/018e2c1a-dead-beef-a0b0-000000000001/share
+```
+
+**Success response:** `200 OK` — `application/json`
+
+<ResponseField name="url" type="string">
+  Relative path to the public share page. Prepend your Vaulx base URL to build a shareable link.
+</ResponseField>
+
+```json
+{"url": "/s/a3f9b2c1d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1"}
+```
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `400 Bad Request` | `folderID` is not a valid UUID. |
+| `403 Forbidden` | No active session or user is not at least an editor. |
+| `404 Not Found` | No folder with that ID exists. |
+| `500 Internal Server Error` | Failed to generate share slug or database insert failed. |
+
+<Note>
+  The share slug is a cryptographically random 32-byte value encoded as a 64-character hex string. Public access to `/s/{slug}` does not require authentication — share links carefully with external recipients.
+</Note>

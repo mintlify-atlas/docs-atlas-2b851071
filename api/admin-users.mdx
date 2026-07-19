@@ -1,0 +1,190 @@
+---
+title: "Admin User Management API Endpoints"
+sidebarTitle: "Admin Users"
+description: "Admin-only endpoints to list, create, and update platform users, plus self-service profile and password management endpoints for all authenticated users."
+---
+
+Vaulx user management is split into two groups. The `/admin/users` endpoints are restricted to administrators and control the full lifecycle of user accounts — creation, role changes, and activation status. The `/profile` endpoints are available to every authenticated user and cover self-service display name updates and password changes.
+
+---
+
+## List all users
+
+**`GET /admin/users`**
+
+Renders the HTML admin users page showing every account registered in the system, regardless of active status.
+
+**Authentication:** admin only. Non-admin requests receive a **403** HTML error page.
+
+**Response fields per user row**
+
+<ResponseField name="id" type="uuid">
+  Unique user identifier.
+</ResponseField>
+
+<ResponseField name="email" type="string">
+  The user's email address (unique, used for login).
+</ResponseField>
+
+<ResponseField name="name" type="string">
+  Display name shown in the UI and audit log.
+</ResponseField>
+
+<ResponseField name="role" type="string">
+  One of `viewer`, `editor`, or `admin`.
+</ResponseField>
+
+<ResponseField name="active" type="boolean">
+  Whether the account is currently active. Deactivated users cannot log in.
+</ResponseField>
+
+<ResponseField name="created_at" type="string">
+  Human-readable account creation date.
+</ResponseField>
+
+---
+
+## Create user
+
+**`POST /admin/users`**
+
+Creates a new Vaulx user account. On success, redirects to `/admin/users`.
+
+**Authentication:** admin only.
+
+**Content-Type:** `application/x-www-form-urlencoded`
+
+<ParamField body="email" type="string" required>
+  Email address for the new account. Must be unique across all users.
+</ParamField>
+
+<ParamField body="name" type="string" required>
+  Display name for the new user.
+</ParamField>
+
+<ParamField body="role" type="string" required>
+  Initial role for the account. Must be one of `viewer`, `editor`, or `admin`.
+</ParamField>
+
+<ParamField body="password" type="string" required>
+  Plain-text password. The server bcrypt-hashes the value before storage; the plain-text password is never persisted.
+</ParamField>
+
+**Example request body**
+
+```
+email=alice%40example.com&name=Alice+Smith&role=editor&password=correcthorsebattery
+```
+
+**Response**
+
+- **302 Redirect** to `/admin/users` on success.
+- **409 Conflict** if the email address is already registered.
+- **400 Bad Request** if any field is missing or if `role` is not a valid value.
+
+<Note>
+  Passwords are hashed with `bcrypt.DefaultCost` before being written to `users.password_hash`. The plain-text value is discarded immediately after hashing.
+</Note>
+
+---
+
+## Update user
+
+**`PATCH /admin/users/{userID}`**
+
+Updates the role and/or active status of an existing user. Both fields are optional — send only the fields you want to change. Returns **200 OK** on success plus an `HX-Trigger` toast.
+
+**Authentication:** admin only.
+
+<ParamField path="userID" type="uuid" required>
+  The UUID of the user account to update.
+</ParamField>
+
+<ParamField body="role" type="string">
+  New role for the user. Must be `viewer`, `editor`, or `admin`. Omit to leave the role unchanged.
+</ParamField>
+
+<ParamField body="active" type="string">
+  `"true"` to activate the account, `"false"` to deactivate it. Omit to leave the status unchanged.
+</ParamField>
+
+**Response**
+
+- **200 OK** with `HX-Trigger` header: `{"showToast":{"message":"User updated","type":"success"}}`.
+- **400 Bad Request** if an invalid role value is supplied.
+- **500 Internal Server Error** if the database update fails.
+
+<Warning>
+  Deactivating your own admin account (`active=false` on your own `userID`) will immediately lock you out of the platform. There is no confirmation step — proceed with caution.
+</Warning>
+
+---
+
+## View profile
+
+**`GET /profile`**
+
+Renders the authenticated user's profile page, which includes forms to update their display name and change their password.
+
+**Authentication:** any authenticated user.
+
+Pass a `success` query parameter to display a confirmation banner after a redirect:
+
+| `?success=` | Banner text |
+|---|---|
+| `name` | Display name updated. |
+| `password` | Password updated successfully. |
+
+---
+
+## Update display name
+
+**`POST /profile`**
+
+Updates the authenticated user's display name. Refreshes the session cookie immediately so the sidebar reflects the new name without requiring a re-login.
+
+**Authentication:** any authenticated user.
+
+**Content-Type:** `application/x-www-form-urlencoded`
+
+<ParamField body="name" type="string" required>
+  The new display name. Must be non-empty and at most 100 characters. Whitespace is trimmed from both ends before validation.
+</ParamField>
+
+**Response**
+
+- **303 See Other** redirect to `/profile?success=name` on success.
+- **400 Bad Request** (re-renders profile page with error) if `name` is empty or exceeds 100 characters.
+- Writes a `profile.name_updated` entry to the audit log.
+
+---
+
+## Change password
+
+**`POST /profile/password`**
+
+Updates the authenticated user's password after verifying the current one.
+
+**Authentication:** any authenticated user.
+
+**Content-Type:** `application/x-www-form-urlencoded`
+
+<ParamField body="current_password" type="string" required>
+  The user's existing plain-text password, used to verify identity before the change is applied.
+</ParamField>
+
+<ParamField body="new_password" type="string" required>
+  The desired new password. Must be at least 8 characters.
+</ParamField>
+
+<ParamField body="confirm_password" type="string" required>
+  Must exactly match `new_password`. The server compares the two values and rejects the request if they differ.
+</ParamField>
+
+**Response**
+
+- **303 See Other** redirect to `/profile?success=password` on success.
+- **400 Bad Request** (re-renders profile page) if `new_password` and `confirm_password` do not match, or if `new_password` is fewer than 8 characters.
+- **403 Forbidden** if the account has been deactivated by an admin.
+- **400 Bad Request** (re-renders with error) if `current_password` does not match the stored bcrypt hash.
+- Writes a `profile.password_updated` entry to the audit log.

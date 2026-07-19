@@ -1,47 +1,168 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get Started with Vaulx in 5 Minutes"
+sidebarTitle: "Quickstart"
+description: "Run Vaulx locally using Docker Compose or a manual Go setup. Have a fully working file platform with an admin account ready in minutes."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
-
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
+This guide gets Vaulx running on your local machine so you can explore the interface, test uploads, and understand the configuration before deploying to production. You have two options: the fastest path uses Docker Compose (everything spins up in one command), while the manual path gives you a live-reloading Go development environment.
 
 ## Prerequisites
 
-Before you begin, you must have:
+Before starting, make sure you have the following installed:
 
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
+- **Go 1.25** — [download](https://go.dev/dl/)
+- **PostgreSQL 16** — only required for the manual setup; Docker Compose manages its own Postgres container
+- **templ CLI** — [installation guide](https://templ.guide/quick-start/installation); required to regenerate server-side components after `.templ` file changes
+- **sqlc** *(optional)* — [sqlc.dev](https://sqlc.dev/); only needed if you change SQL query files
 
-## Get started
+You will also need an **S3-compatible bucket** (the README and examples reference Hetzner Object Storage) and its credentials. Vaulx uses presigned URLs for uploads, so the bucket must be reachable from the browser.
 
-<Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+## Choose Your Setup
 
-    ```bash
-    npm install your-package
-    ```
-  </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+<Tabs>
+  <Tab title="Docker Compose (fastest)">
+    Docker Compose starts both the PostgreSQL database and the Vaulx application container with a single command.
 
-    ```bash
-    your-cli init
-    ```
-  </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
+    <Steps>
+      <Step title="Copy the example environment file">
+        ```bash
+        cp .env.example .env
+        ```
+      </Step>
+      <Step title="Edit .env with your credentials">
+        Open `.env` and fill in every variable. Pay particular attention to `SESSION_SECRET` (must be at least 32 random characters), your Hetzner Object Storage keys, and the admin seed credentials.
 
-    ```bash
-    your-cli start
-    ```
-  </Step>
-</Steps>
+        ```bash
+        # .env — minimum required changes
+        SESSION_SECRET=replace-with-32-plus-byte-random-string
+        SEED_ADMIN_EMAIL=admin@yourdomain.com
+        SEED_ADMIN_PASSWORD=ChangeMe123
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+        HETZNER_ACCESS_KEY=your-access-key
+        HETZNER_SECRET_KEY=your-secret-key
+        HETZNER_S3_ENDPOINT=https://fsn1.your-objectstorage.com
+        HETZNER_BUCKET=vaulx
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
-</Tip>
+        # Docker Compose injects these into the Postgres container
+        POSTGRES_USER=vaulx
+        POSTGRES_PASSWORD=vaulx
+        POSTGRES_DB=vaulx
+        ```
+      </Step>
+      <Step title="Build and start the stack">
+        ```bash
+        docker compose up --build
+        ```
+
+        Docker Compose builds the Vaulx image, waits for Postgres to pass its health check, then starts the app. On first boot, migrations run automatically and the admin account is seeded.
+      </Step>
+      <Step title="Open the app">
+        Navigate to [http://localhost:8080](http://localhost:8080) and log in with the email and password you set in `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD`.
+      </Step>
+    </Steps>
+  </Tab>
+  <Tab title="Manual Go Setup">
+    The manual setup gives you a local Go development environment with full access to the source code and fast rebuild cycles.
+
+    <Steps>
+      <Step title="Start a local Postgres container">
+        ```bash
+        docker run -d --name vaulx-dev \
+          -e POSTGRES_USER=vaulx \
+          -e POSTGRES_PASSWORD=vaulx \
+          -e POSTGRES_DB=vaulx \
+          -p 5432:5432 \
+          postgres:16
+        ```
+      </Step>
+      <Step title="Copy and edit the environment file">
+        ```bash
+        cp .env.example .env
+        ```
+
+        Open `.env` and update the values. The `DATABASE_URL` in `.env.example` is already pointed at `localhost:5432` to match the container started above.
+
+        ```bash
+        DATABASE_URL=postgres://vaulx:vaulx@localhost:5432/vaulx?sslmode=disable
+        SESSION_SECRET=replace-with-32-plus-byte-random-string
+        PORT=8080
+        SEED_ADMIN_EMAIL=admin@yourdomain.com
+        SEED_ADMIN_PASSWORD=ChangeMe123
+        HETZNER_ACCESS_KEY=your-access-key
+        HETZNER_SECRET_KEY=your-secret-key
+        HETZNER_S3_ENDPOINT=https://fsn1.your-objectstorage.com
+        HETZNER_BUCKET=vaulx
+        ```
+      </Step>
+      <Step title="Generate templ components">
+        Vaulx uses [a-h/templ](https://templ.guide) for server-side HTML components. You must run `templ generate` before the first build, and again any time you modify a `.templ` file.
+
+        ```bash
+        templ generate
+        ```
+      </Step>
+      <Step title="Run the server">
+        ```bash
+        go run ./cmd/server
+        ```
+
+        On startup the server runs all pending migrations, seeds the admin account if it does not yet exist, and begins listening on `PORT` (default `8080`).
+      </Step>
+    </Steps>
+  </Tab>
+</Tabs>
+
+## Required Environment Variables
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `DATABASE_URL` | Yes | — | Postgres connection string, e.g. `postgres://user:pass@host:5432/db?sslmode=disable` |
+| `SESSION_SECRET` | Yes | — | Random string ≥ 32 chars used to sign session cookies |
+| `PORT` | No | `8080` | HTTP port the server listens on |
+| `SEED_ADMIN_EMAIL` | Yes | — | Email for the admin account created on first boot |
+| `SEED_ADMIN_PASSWORD` | Yes | — | Password for the seeded admin (min 8 chars, at least one digit) |
+| `HETZNER_ACCESS_KEY` | Yes | — | Hetzner Object Storage access key |
+| `HETZNER_SECRET_KEY` | Yes | — | Hetzner Object Storage secret key |
+| `HETZNER_S3_ENDPOINT` | Yes | `https://fsn1.your-objectstorage.com` | S3-compatible storage endpoint URL |
+| `HETZNER_BUCKET` | Yes | `vaulx` | Bucket name where files are stored |
+
+## First Login
+
+Once the server is running, open [http://localhost:8080](http://localhost:8080) in your browser. You will be redirected to the login page at `/auth/login`. Enter the email and password you configured in `SEED_ADMIN_EMAIL` and `SEED_ADMIN_PASSWORD`.
+
+After logging in you land on `/files` — your root file browser. From there you can:
+
+- Create folders and upload files via the **Upload** page
+- Manage users and roles from the **Admin → Users** panel
+- Browse the audit history at **Admin → Audit Log**
+- Generate share links from any file or folder context menu
+
+## Development Workflow
+
+After making changes to source files you may need to regenerate code before the server picks up your changes:
+
+**After changing any `.templ` file:**
+
+```bash
+templ generate
+```
+
+This regenerates the corresponding `*_templ.go` Go files in `web/templates/`. Run it before `go run` or your build will be stale.
+
+**After changing SQL query files** (files under `internal/db/queries/`):
+
+```bash
+sqlc generate
+```
+
+This regenerates `internal/db/*.go` with updated type-safe query functions.
+
+You can also run both steps together using the Makefile:
+
+```bash
+make generate
+```
+
+<Note>
+  The session cookie is set with `Secure: true`, which means the browser will only send it over HTTPS. In local development this is fine because you access Vaulx directly at `http://localhost` (localhost is exempt from the Secure restriction in most browsers). In production, however, you **must** terminate TLS in front of Vaulx — otherwise the login flow will silently fail. See [Deployment](/deployment) for how to add a domain and HTTPS.
+</Note>

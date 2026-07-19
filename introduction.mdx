@@ -1,0 +1,81 @@
+---
+title: "Vaulx: Private File Platform for Teams"
+sidebarTitle: "Introduction"
+description: "Vaulx is a self-hosted, private file asset platform with role-based access control, audit logging, and S3-compatible storage — built entirely in Go."
+---
+
+Vaulx is a self-hosted file platform designed for teams that need full control over where their files live and who can access them. It combines direct-to-S3 uploads, a folder hierarchy, and fine-grained role-based permissions into a single deployable Go binary — no external services required beyond a PostgreSQL database and an S3-compatible bucket.
+
+## What is Vaulx?
+
+Vaulx gives teams a private home for their file assets. Files are uploaded directly to Hetzner Object Storage (or any S3-compatible provider) via presigned URLs, so file data never passes through the Vaulx server itself. The server handles authentication, permission checks, metadata storage, audit logging, and share-link generation — all backed by PostgreSQL.
+
+Every action — login, upload, rename, delete, folder operation, share creation — is recorded in an immutable audit trail that admins can browse and filter from the web interface. Three roles (`admin`, `editor`, `viewer`) control what each user can do, and per-resource permission grants allow fine-grained access without giving everyone the same level of control.
+
+## Key Capabilities
+
+<CardGroup cols={2}>
+  <Card title="File Management" icon="folder-open" href="/quickstart">
+    Upload directly to S3 via presigned URLs, browse files in a folder hierarchy, inline rename, soft-delete, and move files between folders.
+  </Card>
+  <Card title="Role-Based Access Control" icon="shield-halved" href="/introduction">
+    Three roles — `admin`, `editor`, and `viewer` — with per-resource permission grants so access can be scoped to exactly what each user needs.
+  </Card>
+  <Card title="Share Links" icon="link" href="/introduction">
+    Generate 7-day public share links for individual files or entire folders. View-count tracking and automatic expiry enforcement are built in.
+  </Card>
+  <Card title="Audit Trail" icon="clock-rotate-left" href="/introduction">
+    Every login, upload, delete, rename, and folder operation is logged. Admins can browse and filter the full audit history from the admin panel.
+  </Card>
+  <Card title="Admin Panel" icon="screwdriver-wrench" href="/introduction">
+    Manage users, assign roles, grant per-resource permissions, browse the audit log, view the trash, and restore soft-deleted files — all from the UI.
+  </Card>
+  <Card title="ZIP Downloads" icon="file-zipper" href="/introduction">
+    Download entire folders as ZIP archives. ZIP jobs are processed asynchronously by a background worker and streamed directly from object storage.
+  </Card>
+</CardGroup>
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|------------|
+| Language | Go 1.25 |
+| Router | Chi v5 |
+| Templates | a-h/templ (server-side components) |
+| Frontend | HTMX 2.0.3 + Alpine.js 3.14.3 (no build step) |
+| Database | PostgreSQL 16 via pgx/v5 + sqlc |
+| Sessions | gorilla/sessions backed by Postgres (pgstore) |
+| Storage | AWS SDK Go v2 — S3-compatible (Hetzner Object Storage) |
+| Migrations | golang-migrate (embedded via `embed.FS`) |
+
+## Architecture Overview
+
+Vaulx compiles to a **single stateless binary**. At startup it:
+
+1. Runs all pending SQL migrations (files are embedded in the binary via `embed.FS` — no external migration tool needed at runtime).
+2. Seeds the admin account from `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD` if it does not already exist.
+3. Opens a Postgres-backed session store and connects to the S3 bucket.
+4. Starts the HTTP server.
+
+**Presigned uploads** mean file bytes never transit the Vaulx process. When a user initiates an upload, the server returns a presigned S3 URL; the browser puts the file directly to object storage, then calls back to confirm the upload. This keeps the server lightweight and avoids buffering large files in memory.
+
+## Project Structure
+
+```
+.
+├── cmd/server/          # main.go — router setup, handler wiring, migration runner
+├── internal/
+│   ├── auth/            # session middleware, ACL helpers, UserContext
+│   ├── db/              # sqlc-generated code + querier interface
+│   │   └── queries/     # SQL source files
+│   ├── handler/         # HTTP handlers (files, upload, download, share, admin, permissions)
+│   ├── seed/            # Admin user seeding on first boot
+│   ├── storage/         # S3 client, presign helpers, DeleteObject, CORS setup
+│   └── viewmodel/       # View-layer structs and mapping functions
+├── migrations/          # SQL migration files (embedded into binary at build time)
+├── web/
+│   ├── static/          # CSS, JS (served directly from the binary's working directory)
+│   └── templates/       # .templ components + generated Go code
+├── Dockerfile
+└── docker-compose.yml
+```

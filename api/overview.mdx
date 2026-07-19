@@ -1,0 +1,163 @@
+---
+title: "Vaulx HTTP API Overview"
+sidebarTitle: "Overview"
+description: "Vaulx HTTP API reference: server-rendered HTML and JSON endpoints, base URL, session-cookie auth, rate limits, and the full route table."
+---
+
+Vaulx exposes an HTTP API built on the [Chi v5](https://github.com/go-chi/chi) router. The majority of routes return server-rendered HTML for direct browser use and [HTMX](https://htmx.org/) partial updates, while upload, preview, folder listing, and multipart S3 workflows use JSON. All protected routes require a valid session cookie obtained via `POST /auth/login`.
+
+## Base URL
+
+```
+http://localhost:8080
+```
+
+Replace `localhost:8080` with your deployment hostname and port. When running behind a TLS-terminating reverse proxy, use `https://` instead.
+
+## Request Formats
+
+<Note>
+  There is no API key authentication — all requests use the browser session cookie set by `POST /auth/login`. See the [Authentication](/api/authentication) page for full details.
+</Note>
+
+| Route type | Expected `Content-Type` | Notes |
+|---|---|---|
+| HTML form routes | `application/x-www-form-urlencoded` | Standard HTML form `POST` bodies |
+| JSON API routes (`/api/...`) | `application/json` | Both request and response bodies are JSON |
+| HTMX partial requests | Any | Include `HX-Request: true` to receive partial HTML fragments |
+
+When the `HX-Request: true` header is present on a request, applicable handlers return only the relevant HTML partial rather than the full page layout.
+
+## Response Formats
+
+| Response type | `Content-Type` header | Additional headers |
+|---|---|---|
+| Full HTML pages | `text/html; charset=utf-8` | — |
+| JSON API responses | `application/json` | — |
+| HTMX toast notifications | `text/html; charset=utf-8` | `HX-Trigger` with a JSON payload |
+
+The `HX-Trigger` response header carries a JSON payload that HTMX uses to fire client-side events — for example, to display toast notifications after a file upload or deletion.
+
+## Authentication
+
+Authentication is session-cookie-based. After a successful `POST /auth/login`, the server sets a `vaulx-session` cookie that must be sent with every subsequent request to a protected route. See the [Authentication](/api/authentication) page for the full login flow, cookie attributes, and curl examples.
+
+## Rate Limiting
+
+Vaulx applies per-IP rate limits on two endpoints to reduce abuse:
+
+| Endpoint | Limit |
+|---|---|
+| `POST /auth/login` | 10 requests per IP per minute |
+| `POST /s/{slug}/zip/prepare` | 5 requests per IP per minute |
+
+Requests that exceed the limit receive a `429 Too Many Requests` response.
+
+## Public Routes
+
+The following share routes are accessible without authentication:
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/s/{slug}` | Render the public share page for a slug |
+| `GET` | `/s/{slug}/download` | Direct download of the shared file |
+| `GET` | `/s/{slug}/file/{fileID}` | Download a specific file within a share |
+| `GET` | `/s/{slug}/zip` | Stream a ZIP archive of the share |
+| `POST` | `/s/{slug}/zip/prepare` | Enqueue a ZIP build job for the share (rate-limited: 5/min per IP) |
+| `GET` | `/s/{slug}/zip/status` | Poll the status of an in-progress ZIP job |
+
+## Full Route Table
+
+All other routes require a valid `vaulx-session` cookie (marked **Auth required**).
+
+### Auth
+
+| Method | Path | Auth required | Description |
+|---|---|---|---|
+| `GET` | `/auth/login` | No | Render the HTML login page |
+| `POST` | `/auth/login` | No | Authenticate with email + password; sets session cookie (rate-limited: 10/min per IP) |
+| `POST` | `/auth/logout` | No | Expire the session cookie and redirect to `/auth/login` |
+
+### Files
+
+| Method | Path | Auth required | Description |
+|---|---|---|---|
+| `GET` | `/files` | Yes | List files and folders in the root |
+| `GET` | `/files/search` | Yes | Search files by name |
+| `GET` | `/files/{folderID}` | Yes | List the contents of a specific folder |
+| `DELETE` | `/files/{fileID}` | Yes | Delete a file (moves to trash) |
+| `PATCH` | `/files/{fileID}/name` | Yes | Rename a file |
+| `PATCH` | `/files/{fileID}/folder` | Yes | Move a file to a different folder |
+| `POST` | `/files/{fileID}/share` | Yes | Create a public share link for a file |
+| `GET` | `/upload` | Yes | Render the upload page |
+
+### Folders
+
+| Method | Path | Auth required | Description |
+|---|---|---|---|
+| `POST` | `/files/folders` | Yes | Create a new folder |
+| `DELETE` | `/files/folders/{folderID}` | Yes | Delete a folder |
+| `PATCH` | `/files/folders/{folderID}` | Yes | Rename a folder |
+| `POST` | `/files/folders/{folderID}/share` | Yes | Create a public share link for a folder |
+
+### Upload
+
+| Method | Path | Auth required | Description |
+|---|---|---|---|
+| `POST` | `/api/upload/init` | Yes | Initialise a single-file upload; returns a presigned S3 URL |
+| `POST` | `/api/upload/confirm/{fileID}` | Yes | Confirm that an upload to S3 has completed |
+| `GET` | `/api/file/{fileID}/preview` | Yes | Fetch a preview/thumbnail URL for a file |
+| `GET` | `/api/folders` | Yes | Return all folders as a JSON array |
+
+### Shares
+
+| Method | Path | Auth required | Description |
+|---|---|---|---|
+| `GET` | `/shares` | Yes | List all active share links owned by the current user |
+| `DELETE` | `/shares/{shareID}` | Yes | Revoke (delete) a share link |
+
+### Profile
+
+| Method | Path | Auth required | Description |
+|---|---|---|---|
+| `GET` | `/profile` | Yes | Render the profile settings page |
+| `POST` | `/profile` | Yes | Update the current user's display name |
+| `POST` | `/profile/password` | Yes | Change the current user's password |
+
+### Multipart Upload (S3)
+
+These endpoints proxy the S3 multipart upload lifecycle and are consumed by the browser-side upload client.
+
+| Method | Path | Auth required | Description |
+|---|---|---|---|
+| `POST` | `/api/s3/multipart/` | Yes | Initiate a new S3 multipart upload |
+| `GET` | `/api/s3/multipart/{uploadId}` | Yes | List parts already uploaded for an in-progress multipart upload |
+| `GET` | `/api/s3/multipart/{uploadId}/{partNumber}` | Yes | Get a presigned URL for uploading a specific part |
+| `DELETE` | `/api/s3/multipart/{uploadId}` | Yes | Abort a multipart upload and discard uploaded parts |
+| `POST` | `/api/s3/multipart/{uploadId}/complete` | Yes | Complete the multipart upload and assemble the final object |
+
+### Admin
+
+Admin routes are accessible only to users whose session `role` is `admin`. Requests from non-admin users receive a `403 Forbidden` response.
+
+| Method | Path | Auth required | Description |
+|---|---|---|---|
+| `GET` | `/admin/users` | Yes (admin) | List all users |
+| `POST` | `/admin/users` | Yes (admin) | Create a new user |
+| `PATCH` | `/admin/users/{userID}` | Yes (admin) | Update a user's details or role |
+| `GET` | `/admin/audit` | Yes (admin) | View the audit log |
+| `GET` | `/admin/trash` | Yes (admin) | View soft-deleted files |
+| `POST` | `/admin/trash/{fileID}/restore` | Yes (admin) | Restore a soft-deleted file |
+| `GET` | `/admin/permissions` | Yes (admin) | List all permission grants |
+| `POST` | `/admin/permissions` | Yes (admin) | Grant a permission to a user |
+| `DELETE` | `/admin/permissions/{permID}` | Yes (admin) | Revoke a permission grant |
+
+### ZIP Download
+
+Authenticated ZIP routes mirror the public share ZIP routes but operate on folders within the authenticated user's own storage.
+
+| Method | Path | Auth required | Description |
+|---|---|---|---|
+| `GET` | `/files/{folderID}/zip` | Yes | Stream a ZIP archive of a folder |
+| `POST` | `/files/{folderID}/zip/prepare` | Yes | Enqueue a background ZIP build job for a folder |
+| `GET` | `/files/{folderID}/zip/status` | Yes | Poll the status of an in-progress ZIP job |

@@ -1,0 +1,221 @@
+---
+title: "Uploading Files to Vaulx"
+sidebarTitle: "Uploading"
+description: "Upload files to Vaulx using presigned S3 URLs — no file data passes through the server. Supports single-step small uploads and resumable multipart uploads for large files."
+---
+
+Vaulx uses a presigned-URL upload strategy: the server never touches your file bytes. Instead it issues a time-limited, pre-authorised URL pointing directly at the S3-compatible bucket. Your browser (or API client) then PUTs the data straight to storage. This keeps the Vaulx server lightweight and allows uploads to scale without any changes to the application layer.
+
+Two upload flows are available depending on file size. Both require an authenticated session with **editor** or **admin** role.
+
+## Small File Upload (Simple Presigned PUT)
+
+For files of any size where you want a single-step flow, use the presigned PUT path. The upload zone in the Vaulx web UI drives this flow automatically, but you can also call it directly from your own tooling.
+
+<Steps>
+  <Step title="Initialise the upload">
+    `POST /api/upload/init` — creates a pending file record and returns a presigned PUT URL.
+
+    **Request body (JSON):**
+
+    <ParamField body="name" type="string" required>
+      Original filename (e.g. `report-q4.pdf`). Vaulx sanitises it before using it as the S3 key suffix — non-alphanumeric characters other than `.`, `-`, and `_` are replaced with `_`.
+    </ParamField>
+
+    <ParamField body="size" type="integer" required>
+      File size in bytes. Must match the `Content-Length` you send in the PUT request.
+    </ParamField>
+
+    <ParamField body="mime_type" type="string">
+      MIME type (e.g. `image/png`). Used to set the S3 `Content-Type`. Omit or pass an empty string for `application/octet-stream`.
+    </ParamField>
+
+    <ParamField body="folder_id" type="string">
+      UUID of the destination folder. Omit or pass an empty string to upload to the root.
+    </ParamField>
+
+    **Response (200 OK):**
+
+    <ResponseField name="file_id" type="string">
+      UUID of the newly created (pending) file record. Use this to confirm the upload in step 3.
+    </ResponseField>
+
+    <ResponseField name="upload_url" type="string">
+      Presigned S3 PUT URL. Valid for **15 minutes**. You must set the exact `Content-Type` and `Content-Length` headers when calling it.
+    </ResponseField>
+  </Step>
+
+  <Step title="PUT the file bytes to S3">
+    Upload the raw file bytes directly to the `upload_url` returned in step 1. This request goes to your S3-compatible storage — not to the Vaulx server.
+
+    ```bash
+    curl -X PUT "<upload_url>" \
+      -H "Content-Type: image/png" \
+      -H "Content-Length: 204800" \
+      --data-binary @photo.png
+    ```
+
+    <Note>
+      The `Content-Type` and `Content-Length` headers must exactly match the values you supplied to `/api/upload/init`. A mismatch will cause the presigned URL to reject the request with a `403 Forbidden`.
+    </Note>
+  </Step>
+
+  <Step title="Confirm the upload">
+    `POST /api/upload/confirm/{file_id}` — marks the file as `active` and makes it visible in the browser.
+
+    Only the user who initiated the upload (or an admin) can call this endpoint. Confirming a file that is already `active` returns `404`.
+
+    **Response (200 OK):**
+
+    <ResponseField name="status" type="string">
+      Always `"ok"` on success.
+    </ResponseField>
+
+    <ResponseField name="file_id" type="string">
+      UUID of the now-active file.
+    </ResponseField>
+  </Step>
+</Steps>
+
+### Full curl Example
+
+```bash
+# 1. Init
+INIT=$(curl -s -X POST https://your-vaulx.example.com/api/upload/init \
+  -b "session=<token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "report-q4.pdf",
+    "size": 204800,
+    "mime_type": "application/pdf",
+    "folder_id": "018f2a3b-4c5d-7e8f-9a0b-1c2d3e4f5a6b"
+  }')
+
+FILE_ID=$(echo $INIT | jq -r .file_id)
+UPLOAD_URL=$(echo $INIT | jq -r .upload_url)
+
+# 2. PUT directly to S3
+curl -X PUT "$UPLOAD_URL" \
+  -H "Content-Type: application/pdf" \
+  -H "Content-Length: 204800" \
+  --data-binary @report-q4.pdf
+
+# 3. Confirm
+curl -s -X POST "https://your-vaulx.example.com/api/upload/confirm/$FILE_ID" \
+  -b "session=<token>"
+```
+
+## Multipart Upload (Large Files)
+
+For large files, Vaulx implements the S3 multipart upload API. The web UI uses [Uppy](https://uppy.io) with the `AwsS3` plugin to drive this flow entirely from the browser. Parts are uploaded in parallel (up to 6 concurrent connections) with chunk sizes between 10 MB and 100 MB.
+
+<Steps>
+  <Step title="Create the multipart upload">
+    `POST /api/s3/multipart` — registers a multipart upload with S3 and creates a pending file record.
+
+    **Request body (JSON):**
+
+    <ParamField body="filename" type="string" required>
+      Original filename (e.g. `archive.tar.gz`).
+    </ParamField>
+
+    <ParamField body="contentType" type="string">
+      MIME type of the file (e.g. `application/gzip`).
+    </ParamField>
+
+    <ParamField body="folderId" type="string">
+      UUID of the destination folder. Pass an empty string for root.
+    </ParamField>
+
+    **Response (200 OK):**
+
+    <ResponseField name="uploadId" type="string">
+      S3 multipart upload ID. Required for all subsequent part operations.
+    </ResponseField>
+
+    <ResponseField name="key" type="string">
+      The S3 object key that was assigned to this upload. Format: `uploads/<year>/<month>/<16-hex-bytes>/<sanitized-name>`.
+    </ResponseField>
+
+    <ResponseField name="fileId" type="string">
+      UUID of the pending Vaulx file record.
+    </ResponseField>
+  </Step>
+
+  <Step title="Presign each part">
+    `GET /api/s3/multipart/{uploadId}/{partNumber}?key=<key>` — returns a presigned URL for uploading one part.
+
+    Part numbers are 1-indexed integers. Each presigned URL is valid for **1 hour**.
+
+    **Response (200 OK):**
+
+    <ResponseField name="url" type="string">
+      Presigned PUT URL for this part. PUT your chunk bytes directly to this URL.
+    </ResponseField>
+  </Step>
+
+  <Step title="PUT each part to its presigned URL">
+    For each chunk, PUT the raw bytes to the corresponding presigned URL. S3 returns an `ETag` header in the response — save it alongside the part number; you'll need both in step 4.
+
+    ```bash
+    curl -X PUT "<part_url>" \
+      --data-binary @chunk-01.bin \
+      -D - | grep -i etag
+    ```
+  </Step>
+
+  <Step title="Complete the multipart upload">
+    `POST /api/s3/multipart/{uploadId}/complete` — assembles all parts, activates the file record, and records an audit event.
+
+    **Request body (JSON):**
+
+    <ParamField body="key" type="string" required>
+      The S3 key returned in step 1.
+    </ParamField>
+
+    <ParamField body="fileId" type="string" required>
+      The Vaulx file UUID returned in step 1.
+    </ParamField>
+
+    <ParamField body="size" type="integer" required>
+      Total file size in bytes.
+    </ParamField>
+
+    <ParamField body="parts" type="array" required>
+      Array of completed parts, each with `PartNumber` (integer) and `ETag` (string) as returned by S3 during the PUT.
+    </ParamField>
+
+    **Response (200 OK):**
+
+    <ResponseField name="location" type="string">
+      The S3 object URL returned by the `CompleteMultipartUpload` S3 API call.
+    </ResponseField>
+  </Step>
+</Steps>
+
+### Additional Multipart Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `GET /api/s3/multipart/{uploadId}?key=` | GET | Lists already-uploaded parts. Useful for resuming an interrupted upload — compare the returned parts against your local chunks to determine which ones still need to be sent. |
+| `DELETE /api/s3/multipart/{uploadId}?key=` | DELETE | Aborts the multipart upload and discards all uploaded parts from S3. Returns `204 No Content`. |
+
+## S3 Key Format
+
+| Upload type | Key pattern |
+|-------------|-------------|
+| Simple presigned PUT | `files/<16-hex-bytes>/<sanitized-name>` |
+| Multipart | `uploads/<year>/<month>/<16-hex-bytes>/<sanitized-name>` |
+
+The hex prefix is generated from 8 random bytes (`crypto/rand`), giving 16 hex characters. This ensures that two uploads of identically named files never collide in storage.
+
+## Authorization
+
+Both upload flows require:
+
+1. A valid authenticated session cookie (`session=<token>`).
+2. The authenticated user must have the `editor` or `admin` role. Users with the `viewer` role receive `403 Forbidden`.
+
+<Note>
+  Vaulx automatically configures CORS on the S3 bucket at startup via `storage.EnsureCORS`. This is what allows browser JavaScript to PUT directly to S3 from your Vaulx domain without cross-origin errors. If you are pointing Vaulx at an existing bucket that already has a restrictive CORS policy, the startup routine will overwrite it.
+</Note>

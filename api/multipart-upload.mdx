@@ -1,0 +1,286 @@
+---
+title: "Multipart Upload API for Large Files"
+sidebarTitle: "Multipart Upload"
+description: "S3 multipart upload API for large files: create an upload session, presign individual parts, upload parts directly to S3, then complete or abort."
+---
+
+For large files, Vaulx exposes an S3 multipart upload API that lets the client break a file into parts and upload each one directly to S3 using a per-part presigned URL. The client creates an upload session, fetches a presigned URL for each part, PUTs the raw bytes for that part directly to S3, collects the `ETag` returned by each PUT, then calls the complete endpoint. The Vaulx server is never in the data path — only the signaling endpoints (create, presign, complete, abort) pass through it.
+
+The Uppy-based file browser UI uses this API internally via the `AwsS3` plugin, with a chunk size tuned between 10 MB and 100 MB per part and up to 6 parallel uploads.
+
+<Note>
+  The **create**, **abort**, and **complete** endpoints require an authenticated session with the **editor** or **admin** role. The **list parts** and **presign part** endpoints require only a valid authenticated session.
+</Note>
+
+---
+
+## S3 key format
+
+Multipart upload keys are namespaced under `uploads/` and partitioned by year and month:
+
+```
+uploads/<year>/<month>/<16-hex-bytes>/<sanitized-name>
+```
+
+For example: `uploads/2024/01/a1b2c3d4e5f6a1b2/large-video.mp4`
+
+The `<16-hex-bytes>` segment is a random 8-byte value encoded as hex to prevent collisions between files of the same name. Filename sanitization follows the same rules as the single-file upload API: non-alphanumeric characters (except `.`, `-`, and `_`) are replaced with `_`.
+
+---
+
+## Endpoints
+
+### POST /api/s3/multipart — Create multipart upload
+
+Initiates an S3 multipart upload session and creates a `pending` file record in the database. Returns the S3 `uploadId`, the generated object key, and the Vaulx `fileId` — all three are required for subsequent calls.
+
+**Request body**
+
+```json
+{
+  "filename": "large-video.mp4",
+  "contentType": "video/mp4",
+  "folderId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+}
+```
+
+<ParamField body="filename" type="string" required>
+  Original filename of the file being uploaded. Used to construct the S3 object key after sanitization, and stored as the display name in the database.
+</ParamField>
+
+<ParamField body="contentType" type="string">
+  MIME type of the file (e.g. `video/mp4`, `application/zip`). Passed directly to the S3 `CreateMultipartUpload` call as the object's `Content-Type`. If omitted, `application/octet-stream` is used by the client.
+</ParamField>
+
+<ParamField body="folderId" type="string">
+  UUID of the destination folder. Omit or pass an empty string to place the file at the root level.
+</ParamField>
+
+**Response**
+
+```json
+{
+  "uploadId": "VXBsb2FkIElEIGZvciBNdWx0aXBhcnQgVXBsb2Fk",
+  "key": "uploads/2024/01/a1b2c3d4e5f6a1b2/large-video.mp4",
+  "fileId": "3f7a1b2c-4d5e-6f7a-8b9c-0d1e2f3a4b5c"
+}
+```
+
+<ResponseField name="uploadId" type="string">
+  The S3 multipart upload ID. Pass this as the `{uploadId}` path parameter in all subsequent requests for this upload session.
+</ResponseField>
+
+<ResponseField name="key" type="string">
+  The full S3 object key for this upload. Pass this as the `key` query parameter or in the request body in all subsequent requests.
+</ResponseField>
+
+<ResponseField name="fileId" type="string">
+  The Vaulx UUID of the pending file record. Pass this in the complete request body so the server can activate the file record once S3 assembly finishes.
+</ResponseField>
+
+---
+
+### GET /api/s3/multipart/{uploadId}?key= — List uploaded parts
+
+Returns the list of parts that S3 has already received for the given upload session. Use this to resume an interrupted upload — compare the returned part numbers against the parts you intended to upload and skip any that are already present.
+
+**Path parameter**
+
+| Parameter  | Type   | Description               |
+|------------|--------|---------------------------|
+| `uploadId` | string | S3 multipart upload ID    |
+
+**Query parameter**
+
+| Parameter | Type   | Required | Description            |
+|-----------|--------|----------|------------------------|
+| `key`     | string | Yes      | S3 object key          |
+
+**Response**
+
+```json
+[
+  {"PartNumber": 1, "ETag": "\"d8e8fca2dc0f896fd7cb4cb0031ba249\""},
+  {"PartNumber": 2, "ETag": "\"58e4e3e6a5a33d15f6a71e5a3f0c17ee\""}
+]
+```
+
+Returns a JSON array of part objects. Each object contains `PartNumber` (1-based integer) and `ETag` (the entity tag returned by S3 for that part's PUT). Returns an empty array `[]` if no parts have been uploaded yet.
+
+---
+
+### GET /api/s3/multipart/{uploadId}/{partNumber}?key= — Presign a part
+
+Returns a short-lived presigned PUT URL for a single part. The client PUTs the raw bytes for that part directly to the returned URL. S3 responds with an `ETag` header — save this value; it is required in the complete request.
+
+**Path parameters**
+
+| Parameter    | Type    | Description                                   |
+|--------------|---------|-----------------------------------------------|
+| `uploadId`   | string  | S3 multipart upload ID                        |
+| `partNumber` | integer | Part number (1-based). The last part may be smaller than the others. |
+
+**Query parameter**
+
+| Parameter | Type   | Required | Description  |
+|-----------|--------|----------|--------------|
+| `key`     | string | Yes      | S3 object key |
+
+**Response**
+
+```json
+{
+  "url": "https://fsn1.your-objectstorage.com/vaulx/uploads/2024/01/.../large-video.mp4?partNumber=1&uploadId=...&X-Amz-..."
+}
+```
+
+<ResponseField name="url" type="string">
+  Presigned PUT URL for this part. Valid for **1 hour**. PUT the raw bytes for this part to this URL. The S3 response will include an `ETag` header — store it alongside the part number for use in the complete call.
+</ResponseField>
+
+---
+
+### DELETE /api/s3/multipart/{uploadId}?key= — Abort multipart upload
+
+Cancels the multipart upload session and instructs S3 to discard all parts that have already been uploaded. Call this if the user cancels the upload or if an unrecoverable error occurs, to avoid leaving orphaned part data in the bucket.
+
+**Path parameter**
+
+| Parameter  | Type   | Description            |
+|------------|--------|------------------------|
+| `uploadId` | string | S3 multipart upload ID |
+
+**Query parameter**
+
+| Parameter | Type   | Required | Description  |
+|-----------|--------|----------|--------------|
+| `key`     | string | Yes      | S3 object key |
+
+**Response**
+
+Returns `204 No Content` on success. Any error from S3 is silently swallowed — the endpoint will still return `204` even if the underlying abort call fails, so clients should not rely on this response to confirm S3-side cleanup.
+
+---
+
+### POST /api/s3/multipart/{uploadId}/complete — Complete multipart upload
+
+Tells S3 to assemble all uploaded parts into the final object, then activates the Vaulx file record. The server sets `status = 'active'` and `size_bytes` to the reported size, and writes a `file.upload` audit log entry.
+
+**Path parameter**
+
+| Parameter  | Type   | Description            |
+|------------|--------|------------------------|
+| `uploadId` | string | S3 multipart upload ID |
+
+**Request body**
+
+```json
+{
+  "key": "uploads/2024/01/a1b2c3d4e5f6a1b2/large-video.mp4",
+  "fileId": "3f7a1b2c-4d5e-6f7a-8b9c-0d1e2f3a4b5c",
+  "size": 524288000,
+  "parts": [
+    {"PartNumber": 1, "ETag": "\"d8e8fca2dc0f896fd7cb4cb0031ba249\""},
+    {"PartNumber": 2, "ETag": "\"58e4e3e6a5a33d15f6a71e5a3f0c17ee\""}
+  ]
+}
+```
+
+<ParamField body="key" type="string" required>
+  The S3 object key returned by the create endpoint. Must exactly match the key used for all previous part uploads.
+</ParamField>
+
+<ParamField body="fileId" type="string" required>
+  The Vaulx file UUID returned by the create endpoint. Used to look up and activate the pending file record in the database.
+</ParamField>
+
+<ParamField body="size" type="integer" required>
+  Total size of the assembled file in bytes. Stored as `size_bytes` on the file record. This should equal the sum of all part sizes.
+</ParamField>
+
+<ParamField body="parts" type="array" required>
+  Ordered array of completed parts. Each object must contain `PartNumber` (integer, 1-based) and `ETag` (the exact string returned by S3 in the `ETag` response header for that part's PUT, including surrounding quotes). Parts must be listed in ascending `PartNumber` order.
+</ParamField>
+
+**Response**
+
+```json
+{
+  "location": "https://fsn1.your-objectstorage.com/vaulx/uploads/2024/01/a1b2c3d4e5f6a1b2/large-video.mp4"
+}
+```
+
+<ResponseField name="location" type="string">
+  The S3-reported URL of the assembled object. This is the canonical S3 location of the completed file.
+</ResponseField>
+
+---
+
+## Full flow example
+
+The following shell script demonstrates the complete multipart upload flow for a 20 MB file split into two 10 MB parts.
+
+```bash
+FILE="large-video.mp4"
+CONTENT_TYPE="video/mp4"
+FOLDER_ID=""
+
+# Step 1 — Create the multipart upload session
+CREATE=$(curl -s -X POST https://vaulx.example.com/api/s3/multipart \
+  -H "Content-Type: application/json" \
+  -b "session=<your-session-cookie>" \
+  -d "{\"filename\":\"${FILE}\",\"contentType\":\"${CONTENT_TYPE}\",\"folderId\":\"${FOLDER_ID}\"}")
+
+UPLOAD_ID=$(echo "$CREATE" | jq -r .uploadId)
+KEY=$(echo "$CREATE"      | jq -r .key)
+FILE_ID=$(echo "$CREATE"  | jq -r .fileId)
+
+echo "uploadId: $UPLOAD_ID"
+echo "key:      $KEY"
+echo "fileId:   $FILE_ID"
+
+# Step 2 — Presign and upload part 1 (bytes 0–10485759)
+SIGN1=$(curl -s "https://vaulx.example.com/api/s3/multipart/${UPLOAD_ID}/1?key=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$KEY")" \
+  -b "session=<your-session-cookie>")
+URL1=$(echo "$SIGN1" | jq -r .url)
+ETAG1=$(curl -s -X PUT "$URL1" \
+  -H "Content-Length: 10485760" \
+  --data-binary @<(dd if="$FILE" bs=1M count=10 skip=0 2>/dev/null) \
+  -D - | grep -i '^etag:' | tr -d '\r' | awk '{print $2}')
+
+# Step 3 — Presign and upload part 2 (remaining bytes)
+SIGN2=$(curl -s "https://vaulx.example.com/api/s3/multipart/${UPLOAD_ID}/2?key=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$KEY")" \
+  -b "session=<your-session-cookie>")
+URL2=$(echo "$SIGN2" | jq -r .url)
+ETAG2=$(curl -s -X PUT "$URL2" \
+  -H "Content-Length: 10485760" \
+  --data-binary @<(dd if="$FILE" bs=1M count=10 skip=10 2>/dev/null) \
+  -D - | grep -i '^etag:' | tr -d '\r' | awk '{print $2}')
+
+# Step 4 — Complete the upload
+TOTAL_SIZE=$(wc -c < "$FILE" | tr -d ' ')
+curl -s -X POST "https://vaulx.example.com/api/s3/multipart/${UPLOAD_ID}/complete" \
+  -H "Content-Type: application/json" \
+  -b "session=<your-session-cookie>" \
+  -d "{
+    \"key\": \"${KEY}\",
+    \"fileId\": \"${FILE_ID}\",
+    \"size\": ${TOTAL_SIZE},
+    \"parts\": [
+      {\"PartNumber\": 1, \"ETag\": \"${ETAG1}\"},
+      {\"PartNumber\": 2, \"ETag\": \"${ETAG2}\"}
+    ]
+  }"
+```
+
+<Tip>
+  Before starting a new upload session for a file you may have partially uploaded before, call `GET /api/s3/multipart/{uploadId}?key=` with the previous session's `uploadId` and `key` to retrieve already-uploaded parts. You can skip re-uploading any part numbers that appear in the response and include their `ETag` values directly in the complete request body.
+</Tip>
+
+<Note>
+  Each part — except the very last one — must be **at least 5 MB** (5,242,880 bytes). This is an S3 protocol requirement: S3 will reject a complete request if any non-final part is smaller than 5 MB. The Vaulx Uppy integration enforces a minimum chunk size of 10 MB to stay safely above this limit.
+</Note>
+
+<Warning>
+  An incomplete multipart upload (one that was neither completed nor aborted) continues to accumulate storage costs on your object storage provider. Always call `DELETE /api/s3/multipart/{uploadId}?key=` when an upload is cancelled or fails unrecoverably, and consider configuring a lifecycle rule on your bucket to automatically abort incomplete multipart uploads after a set number of days.
+</Warning>

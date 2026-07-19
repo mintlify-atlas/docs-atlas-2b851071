@@ -1,72 +1,105 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mintlify Starter Kit",
+  "name": "Vaulx",
+  "theme": "luma",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
-  },
-  "favicon": "/favicon.svg",
-  "navigation": {
-    "pages": [
-      {
-        "group": "Getting Started",
-        "pages": [
-          "index",
-          "quickstart"
-        ]
-      }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
+    "primary": "#4F46E5",
+    "light": "#EEF2FF",
+    "dark": "#1E1B4B"
   },
   "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
     "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://app.mintlify.com"
+      "type": "github",
+      "href": "https://github.com/noelzappy/vaulx"
     }
-  },
-  "contextual": {
-    "options": [
-      "copy",
-      "view",
-      "chatgpt",
-      "claude",
-      "perplexity",
-      "mcp",
-      "cursor",
-      "vscode"
-    ]
   },
   "footer": {
     "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
+      "github": "https://github.com/noelzappy/vaulx"
     }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "deployment"
+            ]
+          },
+          {
+            "group": "Core Features",
+            "pages": [
+              "features/files-and-folders",
+              "features/uploading",
+              "features/sharing",
+              "features/search-and-preview"
+            ]
+          },
+          {
+            "group": "Access Control",
+            "pages": [
+              "access-control/roles",
+              "access-control/permissions",
+              "access-control/audit-log"
+            ]
+          },
+          {
+            "group": "Administration",
+            "pages": [
+              "administration/user-management",
+              "administration/trash",
+              "administration/configuration"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "api/overview",
+              "api/authentication"
+            ]
+          },
+          {
+            "group": "Files & Folders",
+            "pages": [
+              "api/files",
+              "api/folders",
+              "api/download"
+            ]
+          },
+          {
+            "group": "Upload",
+            "pages": [
+              "api/upload",
+              "api/multipart-upload"
+            ]
+          },
+          {
+            "group": "Shares & Permissions",
+            "pages": [
+              "api/shares",
+              "api/permissions"
+            ]
+          },
+          {
+            "group": "Admin",
+            "pages": [
+              "api/admin-users",
+              "api/admin-audit",
+              "api/zip"
+            ]
+          }
+        ]
+      }
+    ]
   }
 }

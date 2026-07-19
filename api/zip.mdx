@@ -1,0 +1,174 @@
+---
+title: "ZIP Download API Endpoints"
+sidebarTitle: "ZIP"
+description: "Streaming and async background ZIP download for authenticated folder trees and public folder shares, with smart job reuse when folder contents haven't changed."
+---
+
+Vaulx supports downloading an entire folder tree as a ZIP archive. Two modes are available: **streaming** (immediate, synchronous — the archive is assembled on the fly and piped directly to the browser) and **background job** (async, for large trees — a worker assembles the ZIP into S3 and returns a 24-hour presigned download link). Both modes work for authenticated users browsing their own folders and for visitors accessing a public folder share. The background mode deduplicates work intelligently: if an existing job's snapshot matches the current folder state (same file count, total bytes, and newest file timestamp), the existing job is returned instead of creating a new one.
+
+---
+
+## Streaming ZIP (immediate)
+
+### Authenticated folder download
+
+<ParamField path="folderID" type="uuid" required>
+  The UUID of the folder to download.
+</ParamField>
+
+**`GET /files/{folderID}/zip`**
+
+Streams the folder tree as a ZIP archive directly to the client. The response begins immediately — no background job is created.
+
+**Authentication:** required.
+
+- **Admins** receive every file in the tree.
+- **Non-admins** receive only files they uploaded themselves (mirrors the standard download access rules).
+
+**Response headers**
+
+```
+Content-Type: application/zip
+Content-Disposition: attachment; filename="<folderName>.zip"
+```
+
+- Writes a `folder.zip_download` entry to the audit log.
+- Returns **404** if the folder does not exist.
+- Returns **401** if the request is unauthenticated.
+
+<Note>
+  Because headers are sent before the archive is fully written, errors that occur mid-stream cannot change the HTTP status code. A truncated ZIP may be delivered if an S3 fetch fails partway through.
+</Note>
+
+---
+
+### Public folder share ZIP (streaming)
+
+<ParamField path="slug" type="string" required>
+  The 64-character hex slug of a folder share.
+</ParamField>
+
+<ParamField query="folder" type="uuid">
+  Optional. Download a specific subfolder within the shared tree rather than the root. The UUID must be within the shared root's tree.
+</ParamField>
+
+**`GET /s/{slug}/zip`**
+
+Streams the shared folder (or an in-tree subfolder) as a ZIP archive. No authentication required.
+
+- Returns **404** if the slug is not found or is a file share (not a folder share).
+- Returns **410 Gone** if the share has expired or the view limit has been reached.
+- Returns **404** if the `folder` query parameter points to a UUID outside the shared tree.
+
+---
+
+## Background ZIP job (async)
+
+Background jobs are suited for large folder trees where streaming would time out or the browser connection might be unstable. The client polls a status endpoint until the job transitions to `ready`, then follows the presigned S3 link to download.
+
+### Queue ZIP job (authenticated)
+
+<ParamField path="folderID" type="uuid" required>
+  The UUID of the folder to prepare as a ZIP.
+</ParamField>
+
+**`POST /files/{folderID}/zip/prepare`**
+
+Finds an existing reusable job or creates a new one, then returns an HTML status fragment (designed for HTMX `hx-swap`).
+
+**Authentication:** required.
+
+**Response:** HTML status fragment — one of:
+- **Pending/running** → polling fragment with `hx-get` pointed at the status URL, polling every 3 seconds.
+- **Ready** → download link to the 24-hour presigned S3 URL.
+- **Failed** → error message fragment.
+
+A job is reused if one exists with matching `file_count`, `content_bytes`, and a `created_at` newer than the folder's newest file modification. If the folder contents have changed, a new job is created.
+
+---
+
+### Poll job status (authenticated)
+
+<ParamField path="folderID" type="uuid" required>
+  The UUID of the folder whose job status to query.
+</ParamField>
+
+**`GET /files/{folderID}/zip/status`**
+
+Returns the current HTML status fragment for the folder's active ZIP job.
+
+**Authentication:** required.
+
+| Job status | Fragment content |
+|---|---|
+| `pending` or `running` | Polling fragment (`hx-get` every 3 seconds) |
+| `ready` | Download link with 24-hour presigned S3 URL |
+| `failed` | Error message |
+| No job found | Empty `<div class="zip-status">` |
+
+---
+
+### Queue ZIP job for public share
+
+<ParamField path="slug" type="string" required>
+  The 64-character hex slug of a folder share.
+</ParamField>
+
+<ParamField query="folder" type="uuid">
+  Optional. Target a subfolder within the shared tree.
+</ParamField>
+
+**`POST /s/{slug}/zip/prepare`**
+
+Queues (or reuses) a background ZIP job for a public folder share. No authentication required.
+
+**Rate limit:** 5 requests per IP per minute.
+
+- Returns **404** if the slug is not a folder share.
+- Returns **410 Gone** if the share has expired.
+- The `share_id` is recorded on the job row for reference.
+
+---
+
+### Poll job status for public share
+
+<ParamField path="slug" type="string" required>
+  The 64-character hex slug of a folder share.
+</ParamField>
+
+<ParamField query="folder" type="uuid">
+  Optional. Must match the subfolder used when the job was created.
+</ParamField>
+
+**`GET /s/{slug}/zip/status`**
+
+Returns the current HTML status fragment for the share's active ZIP job. No authentication required.
+
+- Returns **404** if the slug is not a folder share.
+- Returns **410 Gone** if the share has expired.
+
+---
+
+## ZIP job model
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | UUID | Primary key |
+| `folder_id` | UUID | FK → folders.id (ON DELETE CASCADE) |
+| `share_id` | UUID \| null | FK → shares.id (ON DELETE SET NULL); set for share-originated jobs |
+| `status` | text | `pending`, `running`, `ready`, or `failed` |
+| `file_count` | int | Snapshot of file count at job creation time |
+| `content_bytes` | bigint | Snapshot of total uncompressed bytes at job creation time |
+| `s3_key` | text \| null | S3 object key of the finished archive; null until `ready` |
+| `size_bytes` | bigint | Actual size of the produced ZIP in S3 |
+| `error` | text \| null | Error message if `status = 'failed'` |
+| `created_at` | timestamptz | Job creation time |
+| `expires_at` | timestamptz \| null | Set to `NOW() + 24 hours` when job transitions to `ready` |
+
+<Note>
+  Background ZIP download links are presigned S3 URLs that expire after 24 hours. If the folder contents change (a new file is added or a file is deleted), the snapshot no longer matches and a new ZIP job is automatically created on the next prepare request.
+</Note>
+
+<Tip>
+  Stale `running` jobs are automatically marked as `failed` with the message `interrupted by server restart` when the Vaulx server starts up. Expired `ready` jobs are periodically transitioned to `failed` with the message `expired` by a background cleanup routine.
+</Tip>
